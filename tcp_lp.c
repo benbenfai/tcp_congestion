@@ -224,7 +224,7 @@ static void tcp_lp_init(struct sock *sk)
 	hybla_recalc_param(sk);
 
 	/* set minimum rtt as this is the 1st ever seen */
-	ca->minrtt_us = tp->srtt_us;
+	lp->minrtt_us = tp->srtt_us;
 	tp->snd_cwnd = lp->rho;
 
 }
@@ -821,7 +821,8 @@ static void tcp_lp_cong_control(struct sock *sk, const struct rate_sample *rs)
 	if (tp->delivered < TCP_INIT_CWND)
 		cwnd = cwnd + rs->acked_sacked;
 
-	cwnd = max(cwnd, bbr_cwnd_min_target);
+	//cwnd = max(cwnd, bbr_cwnd_min_target);
+	cwnd = max(cwnd, tcp_packets_in_flight(tp) + bbr_cwnd_min_target);
 
 done:
 	tp->snd_cwnd = min(cwnd, tp->snd_cwnd_clamp);	/* apply global cap */

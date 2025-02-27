@@ -770,7 +770,7 @@ static void illinois_update(struct sock *sk, const struct rate_sample *rs)
 		ca->next_rtt_delivered = tp->delivered;
 		update_params(sk);
 		ca->base_rtt = 0x7fffffff;
-		ca->max_rtt = max(tp->srtt_us >> 3, 1U);
+		ca->max_rtt = tp->srtt_us;
 		ca->delack = 0;
 		tcp_lp_pkts_acked(sk, rs);
 		return;
@@ -809,7 +809,7 @@ static void tcp_lp_cong_control(struct sock *sk, const struct rate_sample *rs)
 		lp->next_rtt_delivered = tp->delivered;
 		update_params(sk);
 		lp->base_rtt = 0x7fffffff;
-		lp->max_rtt = max(tp->srtt_us >> 3, 1U);
+		lp->max_rtt = tp->srtt_us;
 		lp->delack = 0;
 		tcp_illinois_pkts_acked(sk, rs);
 		goto done;

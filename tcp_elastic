@@ -56,8 +56,7 @@ struct elastic {
 	u32 next_rtt_delivered; /* scb->tx.delivered at end of round */
 	u32	prior_cwnd;	/* prior cwnd upon entering loss recovery */
 	u32 prev_ca_state:3;     /* CA state on previous ACK */
-	
-	bool  hybla_en;
+
 	u32   snd_cwnd_cents; /* Keeps increment values when it is <1, <<7 */
 	u32   rho;	      /* Rho parameter, integer part  */
 	u32   rho2;	      /* Rho * Rho, integer part */
@@ -117,7 +116,6 @@ static void elastic_init(struct sock *sk)
 	ca->rho_3ls = 0;
 	ca->rho2_7ls = 0;
 	ca->snd_cwnd_cents = 0;
-	ca->hybla_en = true;
 	tp->snd_cwnd = 2;
 	tp->snd_cwnd_clamp = 65535;
 
@@ -254,8 +252,6 @@ static void tcp_illinois_state(struct sock *sk, u8 new_state)
 {
 
 	struct elastic *ca = inet_csk_ca(sk);
-	
-	//ca->hybla_en = (new_state == TCP_CA_Open);
 
 	if (new_state == TCP_CA_Loss) {
 
@@ -406,13 +402,8 @@ static void elastic_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	if (!tcp_is_cwnd_limited(sk))
 		return;
 
-	if (ca->hybla_en) {
-		hybla_cong_avoid(sk, ack, acked);
-		return;
-	}
-
 	if (tcp_in_slow_start(tp))
-		tcp_slow_start(tp, acked);
+		hybla_cong_avoid(sk, ack, acked);
 	else {
 		u64 wwf64 = min(UINT_MAX, int_sqrt64(tp->snd_cwnd * ELASTIC_UNIT * ELASTIC_UNIT * ca->rtt_max / ca->rtt_curr));
 		u32 wwf = wwf64 >> ELASTIC_SCALE;
@@ -523,8 +514,6 @@ done:
 static void elastic_event(struct sock *sk, enum tcp_ca_event event)
 {
 	struct elastic *ca = inet_csk_ca(sk);
-
-	ca->hybla_en = (event == CA_EVENT_TX_START);
 
 	switch (event) {
 	case CA_EVENT_LOSS:

@@ -139,8 +139,7 @@ struct lp {
 	u8  prev_ca_state;
 	
 	u8  delack;
-	
-	bool hybla_en;
+
 	u32 snd_cwnd_cents; /* Keeps increment values when it is <1, <<7 */
 	u32 rho;	      /* Rho parameter, integer part  */
 	u32 rho2;	      /* Rho * Rho, integer part */
@@ -216,7 +215,6 @@ static void tcp_lp_init(struct sock *sk)
 	lp->rho_3ls = 0;
 	lp->rho2_7ls = 0;
 	lp->snd_cwnd_cents = 0;
-	lp->hybla_en = true;
 	tp->snd_cwnd = 2;
 	tp->snd_cwnd_clamp = 65535;
 
@@ -403,11 +401,6 @@ static void hybla_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	if (!tcp_is_cwnd_limited(sk))
 		return;
 
-	if (!ca->hybla_en) {
-		tcp_reno_cong_avoid(sk, ack, acked);
-		return;
-	}
-
 	if (ca->rho == 0)
 		hybla_recalc_param(sk);
 	
@@ -484,13 +477,8 @@ static void tcp_lp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 			return;
 
 		/* In slow start */
-		if (lp->hybla_en) {
+		if (tcp_in_slow_start(tp)) {
 			hybla_cong_avoid(sk, ack, acked);
-		} else if (tcp_in_slow_start(tp)) {
-			u32 tmp_acked;
-			tmp_acked = tcp_slow_start(tp, acked);
-			if (tmp_acked)
-				tcp_cong_avoid_ai(tp, min(tp->snd_cwnd, TCP_SCALABLE_AI_CNT), tmp_acked);
 		} else {
 
 			u32 delta;
@@ -529,8 +517,6 @@ static void tcp_illinois_reset(struct sock *sk)
 static void tcp_illinois_state(struct sock *sk, u8 new_state)
 {
 	struct lp *lp = inet_csk_ca(sk);
-	
-	lp->hybla_en = (new_state == TCP_CA_Open);
 
 	if (new_state == TCP_CA_Loss) {
 
@@ -704,7 +690,7 @@ static void tcp_lp_pkts_acked(struct sock *sk, const struct rate_sample *rs)
 	else
 		lp->flag &= ~LP_WITHIN_THR;
 
-	if (lp->flag & LP_WITHIN_THR || lp->hybla_en || inet_csk(sk)->icsk_ca_state >= TCP_CA_Recovery)
+	if (lp->flag & LP_WITHIN_THR || inet_csk(sk)->icsk_ca_state >= TCP_CA_Recovery)
 		return;
 
 	/* FIXME: try to reset owd_min and owd_max here

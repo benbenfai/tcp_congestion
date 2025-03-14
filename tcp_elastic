@@ -488,11 +488,6 @@ static void tcp_lp_cong_control(struct sock *sk, const struct rate_sample *rs)
 
 	if (state == TCP_CA_Recovery && prev_state != TCP_CA_Recovery) {
 		ca->next_rtt_delivered = tp->delivered;  /* start round now */
-		update_params(sk);
-		ca->base_rtt = 0x7fffffff;
-		ca->max_rtt = tp->srtt_us;
-		ca->delack = 0;
-		tcp_illinois_pkts_acked(sk, rs);
 		/* Cut unused cwnd from app behavior, TSQ, or TSO deferral: */
 		cwnd = max(cwnd, tcp_packets_in_flight(tp) + rs->acked_sacked);
 		goto done;

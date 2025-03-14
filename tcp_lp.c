@@ -793,11 +793,6 @@ static void tcp_lp_cong_control(struct sock *sk, const struct rate_sample *rs)
 	if (state == TCP_CA_Recovery && prev_state != TCP_CA_Recovery) {
 		cwnd = max(cwnd, tcp_packets_in_flight(tp) + rs->acked_sacked);
 		lp->next_rtt_delivered = tp->delivered;
-		update_params(sk);
-		lp->base_rtt = 0x7fffffff;
-		lp->max_rtt = tp->srtt_us;
-		lp->delack = 0;
-		tcp_illinois_pkts_acked(sk, rs);
 		goto done;
 	} else if (prev_state >= TCP_CA_Recovery && state < TCP_CA_Recovery) {
 		/* Exiting loss recovery; restore cwnd saved before recovery. */

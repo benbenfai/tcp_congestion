@@ -448,8 +448,6 @@ static void illinois_update(struct sock *sk, const struct rate_sample *rs)
 		ca->base_rtt = 0x7fffffff;
 		ca->max_rtt = tp->srtt_us;
 		ca->delack = 0;
-		tcp_illinois_pkts_acked(sk, rs);
-		return;
 	}
 
 	/* Record the last non-app-limited or the highest app-limited bw */

@@ -446,6 +446,7 @@ static void illinois_update(struct sock *sk, const struct rate_sample *rs)
 		ca->next_rtt_delivered = tp->delivered;
 		update_params(sk);
 		ca->base_rtt = 0x7fffffff;
+		ca->rtt_max = ca->max_rtt;
 		ca->max_rtt = tp->srtt_us;
 		ca->delack = 0;
 	}

@@ -510,9 +510,6 @@ static void elastic_event(struct sock *sk, enum tcp_ca_event event)
 	struct elastic *ca = inet_csk_ca(sk);
 
 	switch (event) {
-	case CA_EVENT_LOSS:
-		ca->rtt_max = ca->max_rtt;
-		break;
 	case CA_EVENT_CWND_RESTART:
 		ca->rtt_max = ca->max_rtt;
 		break;

@@ -446,7 +446,6 @@ static void illinois_update(struct sock *sk, const struct rate_sample *rs)
 		ca->next_rtt_delivered = tp->delivered;
 		update_params(sk);
 		ca->base_rtt = 0x7fffffff;
-		ca->rtt_max = ca->max_rtt;
 		ca->max_rtt = tp->srtt_us;
 		ca->delack = 0;
 	}
@@ -510,6 +509,9 @@ static void elastic_event(struct sock *sk, enum tcp_ca_event event)
 	struct elastic *ca = inet_csk_ca(sk);
 
 	switch (event) {
+	case CA_EVENT_LOSS:
+		ca->rtt_max = ca->max_rtt;
+		break;
 	case CA_EVENT_CWND_RESTART:
 		ca->rtt_max = ca->max_rtt;
 		break;

@@ -510,10 +510,10 @@ static void elastic_event(struct sock *sk, enum tcp_ca_event event)
 
 	switch (event) {
 	case CA_EVENT_LOSS:
-		ca->rtt_max = ca->max_rtt;
+		ca->rtt_max = max(ca->max_rtt, ca->rtt_curr);
 		break;
 	case CA_EVENT_CWND_RESTART:
-		ca->rtt_max = ca->max_rtt;
+		ca->rtt_max = max(ca->max_rtt, ca->rtt_curr);
 		break;
 	default:
 		/* don't care */
@@ -532,7 +532,7 @@ static size_t tcp_illinois_info(struct sock *sk, u32 ext, int *attr,
 		info->vegas.tcpv_enabled = 1;
 		info->vegas.tcpv_rttcnt = ca->cnt_rtt;
 		info->vegas.tcpv_minrtt = ca->base_rtt;
-		info->vegas.tcpv_rtt = 0;
+		info->vegas.tcpv_rtt = ca->rtt_curr;
 
 		if (info->vegas.tcpv_rttcnt > 0) {
 			u64 t = ca->sum_rtt;

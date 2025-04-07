@@ -757,8 +757,6 @@ static void illinois_update(struct sock *sk, const struct rate_sample *rs)
 		update_params(sk);
 		ca->base_rtt = 0x7fffffff;
 		ca->max_rtt = tp->srtt_us;
-		ca->delack = 0;
-		tcp_lp_pkts_acked(sk, rs);
 		return;
 	}
 

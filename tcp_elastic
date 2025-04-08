@@ -57,6 +57,7 @@ struct elastic {
 	u32	prior_cwnd;	/* prior cwnd upon entering loss recovery */
 	u32 prev_ca_state:3;     /* CA state on previous ACK */
 
+	bool  hybla_en;
 	u32   snd_cwnd_cents; /* Keeps increment values when it is <1, <<7 */
 	u32   rho;	      /* Rho parameter, integer part  */
 	u32   rho2;	      /* Rho * Rho, integer part */
@@ -116,6 +117,7 @@ static void elastic_init(struct sock *sk)
 	ca->rho_3ls = 0;
 	ca->rho2_7ls = 0;
 	ca->snd_cwnd_cents = 0;
+	ca->hybla_en = true;
 	tp->snd_cwnd = 2;
 	tp->snd_cwnd_clamp = 65535;
 
@@ -253,6 +255,8 @@ static void tcp_illinois_state(struct sock *sk, u8 new_state)
 
 	struct elastic *ca = inet_csk_ca(sk);
 
+	ca->hybla_en = (ca_state == TCP_CA_Open);
+
 	if (new_state == TCP_CA_Loss) {
 
 		ca->prev_ca_state = TCP_CA_Loss;
@@ -336,6 +340,11 @@ static void hybla_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	if (tp->srtt_us < ca->minrtt_us) {
 		hybla_recalc_param(sk);
 		ca->minrtt_us = tp->srtt_us;
+	}
+
+	if (!ca->hybla_en) {
+		tcp_reno_cong_avoid(sk, ack, acked);
+		return;
 	}
 
 	if (ca->rho == 0)

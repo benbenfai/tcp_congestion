@@ -255,7 +255,7 @@ static void tcp_illinois_state(struct sock *sk, u8 new_state)
 
 	struct elastic *ca = inet_csk_ca(sk);
 
-	ca->hybla_en = (ca_state == TCP_CA_Open);
+	ca->hybla_en = (new_state == TCP_CA_Open);
 
 	if (new_state == TCP_CA_Loss) {
 

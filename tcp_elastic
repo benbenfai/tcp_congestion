@@ -249,13 +249,10 @@ static void tcp_illinois_reset(struct sock *sk)
 	rtt_reset(sk);
 }
 
-
 static void tcp_illinois_state(struct sock *sk, u8 new_state)
 {
 
 	struct elastic *ca = inet_csk_ca(sk);
-
-	ca->hybla_en = (new_state == TCP_CA_Open);
 
 	if (new_state == TCP_CA_Loss) {
 
@@ -264,6 +261,18 @@ static void tcp_illinois_state(struct sock *sk, u8 new_state)
 		tcp_illinois_reset(sk);
 
 	}
+}
+
+static void tcp_westwood_ack(struct sock *sk, u32 ack_flags)
+{
+	struct elastic *ca = inet_csk_ca(sk);
+
+	if ((ack_flags & CA_ACK_SLOWPATH) && ca->base_rtt > rtt1) {
+		ca->hybla_en = true;
+	} else {
+		ca->hybla_en = false;
+	}
+
 }
 
 static void tcp_illinois_pkts_acked(struct sock *sk, const struct rate_sample *rs)
@@ -421,6 +430,11 @@ static void elastic_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		} else {
 			u32 delta;
 
+			if (ca->hybla_en) {
+				hybla_cong_avoid(sk, ack, acked);
+				return;
+			}
+
 			/* snd_cwnd_cnt is # of packets since last cwnd increment */
 			tp->snd_cwnd_cnt += ca->acked;
 			ca->acked = 1;
@@ -563,6 +577,7 @@ static struct tcp_congestion_ops tcp_elastic __read_mostly = {
 	.undo_cwnd	= tcp_reno_undo_cwnd,
 	.cong_avoid	= elastic_cong_avoid,
 	.cong_control  = tcp_lp_cong_control,
+	.in_ack_event	= tcp_westwood_ack,
 	.get_info	= tcp_illinois_info,
 	.set_state	= tcp_illinois_state,
 	.cwnd_event	= elastic_event

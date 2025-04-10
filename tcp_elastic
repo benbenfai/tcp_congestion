@@ -37,6 +37,10 @@ static int rtt0 = 25;
 module_param(rtt0, int, 0644);
 MODULE_PARM_DESC(rtt0, "reference rout trip time (ms)");
 
+static int rtt1 = 50;
+module_param(rtt1, int, 0444);
+MODULE_PARM_DESC(rtt1, "reference rout trip time (ms)");
+
 struct elastic {
 	u32	rtt_max;
 	u32	rtt_curr;

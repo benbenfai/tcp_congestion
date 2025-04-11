@@ -58,7 +58,7 @@ struct elastic {
 	u8  delack;
 	
 	u32 next_rtt_delivered; /* scb->tx.delivered at end of round */
-	u32	prior_cwnd;	/* prior cwnd upon entering loss recovery */
+	u32 prior_cwnd;	/* prior cwnd upon entering loss recovery */
 	u32 prev_ca_state:3;     /* CA state on previous ACK */
 
 	bool  hybla_en;
@@ -286,6 +286,7 @@ static void tcp_illinois_pkts_acked(struct sock *sk, const struct rate_sample *r
 	struct elastic *ca = inet_csk_ca(sk);
 	
 	u32 rtt_us = rs->rtt_us;
+	u32 new_rtt = rtt_us+1;
 	
 	/* dup ack, no rtt sample */
 	if (rtt_us < 0)
@@ -312,7 +313,12 @@ static void tcp_illinois_pkts_acked(struct sock *sk, const struct rate_sample *r
 		}
 	}
 
-	ca->rtt_curr = rtt_us + 1;
+	if (new_rtt <= ca->rtt_max && new_rtt > rtt1 && ca->rtt_curr < new_rtt) {
+		ca->rtt_curr = (new_rtt >> 1) + (ca->rtt_curr >> 1);
+	} else {
+		ca->rtt_curr = new_rtt;
+	}
+
 	if (ca->rtt_curr > ca->rtt_max) {
 		ca->rtt_max = ca->rtt_curr;
 	}

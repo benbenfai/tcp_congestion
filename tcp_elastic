@@ -24,11 +24,11 @@
 
 static const u32 bbr_cwnd_min_target = 4;
 
-static int win_thresh __read_mostly = 15;
+static int win_thresh __read_mostly = 20; /* Increased threshold for adaptive alpha/beta */
 module_param(win_thresh, int, 0);
 MODULE_PARM_DESC(win_thresh, "Window threshold for starting adaptive sizing");
 
-static int theta __read_mostly = 5;
+static int theta __read_mostly = 8; /* Increased RTT count for full alpha growth recovery */
 module_param(theta, int, 0);
 MODULE_PARM_DESC(theta, "# of fast RTT's before full growth");
 
@@ -37,9 +37,7 @@ static int rtt0 = 25;
 module_param(rtt0, int, 0644);
 MODULE_PARM_DESC(rtt0, "reference rout trip time (ms)");
 
-static int rtt1 = 50;
-module_param(rtt1, int, 0444);
-MODULE_PARM_DESC(rtt1, "reference rout trip time (ms)");
+static const int rtt1 = 75; /* Increased threshold for Hybla activation */
 
 struct elastic {
 	u32	rtt_max;
@@ -56,9 +54,9 @@ struct elastic {
 	u8	rtt_low;	/* # of rtts measurements below threshold */
 
 	u8  delack;
-	
+
 	u32 next_rtt_delivered; /* scb->tx.delivered at end of round */
-	u32 prior_cwnd;	/* prior cwnd upon entering loss recovery */
+	u32	prior_cwnd;	/* prior cwnd upon entering loss recovery */
 	u32 prev_ca_state:3;     /* CA state on previous ACK */
 
 	bool  hybla_en;
@@ -103,7 +101,7 @@ static void elastic_init(struct sock *sk)
 	ca->alpha = ALPHA_MAX;
 	ca->beta = BETA_BASE;
 	ca->base_rtt = 0x7fffffff;
-	ca->max_rtt = tp->srtt_us;
+	ca->max_rtt = 0;
 
 	ca->acked = 0;
 	ca->rtt_low = 0;
@@ -111,7 +109,7 @@ static void elastic_init(struct sock *sk)
 
 	rtt_reset(sk);
 	
-	ca->prior_cwnd = 0;
+	ca->prior_cwnd = TCP_INIT_CWND;
 	tp->snd_ssthresh = TCP_INFINITE_SSTHRESH;
 	ca->next_rtt_delivered = tp->delivered;
 	ca->prev_ca_state = TCP_CA_Open;
@@ -238,7 +236,10 @@ static void update_params(struct sock *sk)
 		ca->alpha = alpha(ca, da, dm);
 		ca->beta = beta(da, dm);
 	}
-
+	
+	/* Decay rtt_max towards rtt_curr to adapt to faster paths over time */
+	ca->rtt_max = max(ca->rtt_curr, ca->rtt_max - (ca->rtt_max >> 4));
+	
 	rtt_reset(sk);
 }
 
@@ -284,10 +285,10 @@ static void tcp_illinois_pkts_acked(struct sock *sk, const struct rate_sample *r
 	
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elastic *ca = inet_csk_ca(sk);
-	
+
 	u32 rtt_us = rs->rtt_us;
 	u32 new_rtt = rtt_us+1;
-	
+
 	/* dup ack, no rtt sample */
 	if (rtt_us < 0)
 		return;
@@ -314,7 +315,7 @@ static void tcp_illinois_pkts_acked(struct sock *sk, const struct rate_sample *r
 	}
 
 	if (new_rtt <= ca->rtt_max && new_rtt > rtt1 && ca->rtt_curr < new_rtt) {
-		ca->rtt_curr = (new_rtt >> 1) + (ca->rtt_curr >> 1);
+		ca->rtt_curr = (new_rtt >> 2) + ((ca->rtt_curr * 3) >> 2); /* Smoothed more (25% new / 75% old) */
 	} else {
 		ca->rtt_curr = new_rtt;
 	}
@@ -440,6 +441,9 @@ static void elastic_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		} else {
 			u32 delta;
 
+			ca->rtt_max = max(ca->rtt_max, ca->max_rtt);
+			ca->rtt_curr = min(ca->base_rtt, tp->srtt_us);
+
 			if (ca->hybla_en) {
 				hybla_cong_avoid(sk, ack, acked);
 				return;
@@ -459,7 +463,6 @@ static void elastic_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 				tp->snd_cwnd_cnt = 0;
 			}
 
-			ca->rtt_max = tp->srtt_us;
 		}
 	}
 }
@@ -504,7 +507,7 @@ static void tcp_lp_cong_control(struct sock *sk, const struct rate_sample *rs)
 	if (!rs->acked_sacked)
 		goto done;  /* no packet fully ACKed; just apply caps */	
 
-	if (state == TCP_CA_Open)
+	if (ca->hybla_en || state == TCP_CA_Open)
 		goto done;
 
 	ca->prev_ca_state = state;
@@ -538,6 +541,7 @@ done:
 
 static void elastic_event(struct sock *sk, enum tcp_ca_event event)
 {
+	struct tcp_sock *tp = tcp_sk(sk);
 	struct elastic *ca = inet_csk_ca(sk);
 
 	switch (event) {
@@ -546,8 +550,13 @@ static void elastic_event(struct sock *sk, enum tcp_ca_event event)
 		ca->delack = 0;
 		break;
 	case CA_EVENT_CWND_RESTART:
-		ca->rtt_max = max(ca->max_rtt, ca->rtt_curr);
+		ca->rtt_max = max((tp->srtt_us * 3 + ca->rtt_max * 7) / 10, ca->rtt_curr);
 		break;
+	/*
+	case CA_EVENT_COMPLETE_CWR:
+		ca->rtt_max = max((ca->max_rtt >> 1) + (ca->rtt_max >> 1), ca->rtt_curr);
+		break;
+	*/
 	default:
 		/* don't care */
 		break;
@@ -559,13 +568,14 @@ static void elastic_event(struct sock *sk, enum tcp_ca_event event)
 static size_t tcp_illinois_info(struct sock *sk, u32 ext, int *attr,
 				union tcp_cc_info *info)
 {
+	struct tcp_sock *tp = tcp_sk(sk);
 	const struct elastic *ca = inet_csk_ca(sk);
 
 	if (ext & (1 << (INET_DIAG_VEGASINFO - 1))) {
 		info->vegas.tcpv_enabled = 1;
 		info->vegas.tcpv_rttcnt = ca->cnt_rtt;
 		info->vegas.tcpv_minrtt = ca->base_rtt;
-		info->vegas.tcpv_rtt = ca->rtt_curr;
+		info->vegas.tcpv_rtt = min(ca->rtt_curr, tp->srtt_us);
 
 		if (info->vegas.tcpv_rttcnt > 0) {
 			u64 t = ca->sum_rtt;
@@ -579,12 +589,20 @@ static size_t tcp_illinois_info(struct sock *sk, u32 ext, int *attr,
 	return 0;
 }
 
+static u32 tcp_cus_undo_cwnd(struct sock *sk)
+{
+	const struct tcp_sock *tp = tcp_sk(sk);
+	struct elastic *ca = inet_csk_ca(sk);
+
+	return max(tp->snd_cwnd, ca->prior_cwnd);
+}
+
 static struct tcp_congestion_ops tcp_elastic __read_mostly = {
 	.name		= "elastic",
 	.owner		= THIS_MODULE,
 	.init		= elastic_init,
 	.ssthresh   = tcp_lp_ssthresh,
-	.undo_cwnd	= tcp_reno_undo_cwnd,
+	.undo_cwnd	= tcp_cus_undo_cwnd,
 	.cong_avoid	= elastic_cong_avoid,
 	.cong_control  = tcp_lp_cong_control,
 	.in_ack_event	= tcp_westwood_ack,
@@ -609,3 +627,4 @@ module_exit(elastic_unregister);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Elastic TCP");
+

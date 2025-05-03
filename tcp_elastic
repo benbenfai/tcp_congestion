@@ -241,9 +241,6 @@ static void update_params(struct sock *sk)
 		ca->beta = beta(da, dm);
 	}
 	
-	/* Decay rtt_max towards rtt_curr to adapt to faster paths over time */
-	ca->rtt_max = max(ca->rtt_curr, ca->rtt_max - (ca->rtt_max >> 4));
-	
 	rtt_reset(sk);
 }
 
@@ -555,16 +552,6 @@ static void elastic_event(struct sock *sk, enum tcp_ca_event event)
 		break;
 	case CA_EVENT_CWND_RESTART:
 		ca->rtt_max = max((tp->srtt_us * 3 + ca->rtt_max * 7) / 10, ca->rtt_curr);
-		break;
-	case CA_EVENT_COMPLETE_CWR:
-		{
-			u32 mitigated_cwnd;
-
-			mitigated_cwnd = max(ca->prior_cwnd - calculate_beta_scaled_value(sk, ca->prior_cwnd), tcp_packets_in_flight(tp) + bbr_cwnd_min_target);
-
-			tp->snd_ssthresh = mitigated_cwnd;
-			tp->snd_cwnd = mitigated_cwnd;
-		}
 		break;
 	default:
 		/* don't care */

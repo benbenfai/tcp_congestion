@@ -241,6 +241,12 @@ static void update_params(struct sock *sk)
 		ca->beta = beta(da, dm);
 	}
 	
+	/* Decay rtt_max towards rtt_curr to adapt to faster paths over time */
+	//ca->rtt_max = max(ca->rtt_curr, ca->rtt_max - (ca->rtt_max >> 4));
+
+	/* Ensure rtt_max reflects the actual maximum observed in the last round */
+	//ca->rtt_max = max(ca->rtt_max, ca->max_rtt);
+	
 	rtt_reset(sk);
 }
 
@@ -482,8 +488,8 @@ static void illinois_update(struct sock *sk, const struct rate_sample *rs)
 	if (!before(rs->prior_delivered, ca->next_rtt_delivered)) {
 		ca->next_rtt_delivered = tp->delivered;
 		update_params(sk);
-		ca->base_rtt = tp->srtt_us;
-		ca->max_rtt = tp->srtt_us;
+		/* Keep base_rtt tracking long-term minimum via tcp_illinois_pkts_acked */
+		ca->max_rtt = ca->base_rtt; /* Reset max_rtt relative to base for the new round */
 	}
 
 	/* Record the last non-app-limited or the highest app-limited bw */
@@ -508,7 +514,7 @@ static void tcp_lp_cong_control(struct sock *sk, const struct rate_sample *rs)
 	if (!rs->acked_sacked)
 		goto done;  /* no packet fully ACKed; just apply caps */	
 
-	if (ca->hybla_en || state == TCP_CA_Open)
+	if (state == TCP_CA_Open) /* Let cong_control adjustments run even if hybla_en is true */
 		goto done;
 
 	ca->prev_ca_state = state;
@@ -530,9 +536,6 @@ static void tcp_lp_cong_control(struct sock *sk, const struct rate_sample *rs)
 		cwnd = max(cwnd, ca->prior_cwnd);
 	}
 
-	if (tp->delivered < TCP_INIT_CWND)
-		cwnd = cwnd + rs->acked_sacked;
-
 	cwnd = max(cwnd, tcp_packets_in_flight(tp) + bbr_cwnd_min_target);
 
 done:
@@ -553,6 +556,18 @@ static void elastic_event(struct sock *sk, enum tcp_ca_event event)
 	case CA_EVENT_CWND_RESTART:
 		ca->rtt_max = max((tp->srtt_us * 3 + ca->rtt_max * 7) / 10, ca->rtt_curr);
 		break;
+	/*
+	case CA_EVENT_COMPLETE_CWR:
+		{
+			u32 mitigated_cwnd;
+
+			mitigated_cwnd = max(ca->prior_cwnd - calculate_beta_scaled_value(sk, ca->prior_cwnd), tcp_packets_in_flight(tp) + bbr_cwnd_min_target);
+
+			tp->snd_ssthresh = mitigated_cwnd;
+			tp->snd_cwnd = mitigated_cwnd;
+		}
+		break;
+	*/
 	default:
 		/* don't care */
 		break;

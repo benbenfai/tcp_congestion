@@ -1,39 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
-/*
- * TCP Low Priority (TCP-LP)
- *
- * TCP Low Priority is a distributed algorithm whose goal is to utilize only
- *   the excess network bandwidth as compared to the ``fair share`` of
- *   bandwidth as targeted by TCP.
- *
- * As of 2.6.13, Linux supports pluggable congestion control algorithms.
- * Due to the limitation of the API, we take the following changes from
- * the original TCP-LP implementation:
- *   o We use newReno in most core CA handling. Only add some checking
- *     within cong_avoid.
- *   o Error correcting in remote HZ, therefore remote HZ will be keeped
- *     on checking and updating.
- *   o Handling calculation of One-Way-Delay (OWD) within rtt_sample, since
- *     OWD have a similar meaning as RTT. Also correct the buggy formular.
- *   o Handle reaction for Early Congestion Indication (ECI) within
- *     pkts_acked, as mentioned within pseudo code.
- *   o OWD is handled in relative format, where local time stamp will in
- *     tcp_time_stamp format.
- *
- * Original Author:
- *   Aleksandar Kuzmanovic <akuzma@northwestern.edu>
- * Available from:
- *   http://www.ece.rice.edu/~akuzma/Doc/akuzma/TCP-LP.pdf
- * Original implementation for 2.4.19:
- *   http://www-ece.rice.edu/networks/TCP-LP/
- *
- * 2.6.x module Authors:
- *   Wong Hoi Sing, Edison <hswong3i@gmail.com>
- *   Hung Hing Lun, Mike <hlhung3i@gmail.com>
- * SourceForge project page:
- *   http://tcp-lp-mod.sourceforge.net/
- */
-
 #include <linux/module.h>
 #include <linux/skbuff.h>
 #include <linux/inet_diag.h>
@@ -75,6 +39,8 @@ MODULE_PARM_DESC(theta, "# of fast RTT's before full growth");
 static int rtt0 = 25;
 module_param(rtt0, int, 0644);
 MODULE_PARM_DESC(rtt0, "reference rout trip time (ms)");
+
+static const int rtt1 = 75; /* Increased threshold for Hybla activation */
 
 
 /**
@@ -140,6 +106,7 @@ struct lp {
 	
 	u8  delack;
 
+	bool hybla_en;
 	u32 snd_cwnd_cents; /* Keeps increment values when it is <1, <<7 */
 	u32 rho;	      /* Rho parameter, integer part  */
 	u32 rho2;	      /* Rho * Rho, integer part */
@@ -685,7 +652,7 @@ static void tcp_lp_pkts_acked(struct sock *sk, const struct rate_sample *rs)
 
 	/* test if within threshold */
 	if (lp->sowd >> 3 <
-	    lp->owd_min + 15 * (lp->owd_max - lp->owd_min) / 100)
+	    lp->owd_min + 25 * (lp->owd_max - lp->owd_min) / 100) /* Increased threshold to 25% for LTE */
 		lp->flag |= LP_WITHIN_THR;
 	else
 		lp->flag &= ~LP_WITHIN_THR;
@@ -704,7 +671,8 @@ static void tcp_lp_pkts_acked(struct sock *sk, const struct rate_sample *rs)
 	 * drop snd_cwnd into 1 */
 	if (lp->flag & LP_WITHIN_INF) {
 
-		lp->prior_cwnd = tp->snd_cwnd = max(tp->snd_cwnd - ((tp->snd_cwnd * lp->beta) >> BETA_SHIFT), 2U);
+		lp->hybla_en = true;
+		//tp->snd_cwnd = max(tp->snd_cwnd - ((tp->snd_cwnd * lp->beta) >> BETA_SHIFT), 2U);
 
 	}
 
@@ -755,9 +723,8 @@ static void illinois_update(struct sock *sk, const struct rate_sample *rs)
 	if (!before(rs->prior_delivered, ca->next_rtt_delivered)) {
 		ca->next_rtt_delivered = tp->delivered;
 		update_params(sk);
-		ca->base_rtt = 0x7fffffff;
-		ca->max_rtt = tp->srtt_us;
-		return;
+		/* Keep base_rtt tracking long-term minimum via tcp_illinois_pkts_acked */
+		ca->max_rtt = ca->base_rtt; /* Reset max_rtt relative to base for the new round */
 	}
 
 	if (!rs->is_app_limited ||
@@ -780,30 +747,38 @@ static void tcp_lp_cong_control(struct sock *sk, const struct rate_sample *rs)
 	if (!rs->acked_sacked)
 		goto done;  /* no packet fully ACKed; just apply caps */
 
-	if (state == TCP_CA_Open)
+	if (state == TCP_CA_Open) /* Let cong_control adjustments run even if hybla_en is true */
 		goto done;
 
 	if (rs->losses > 0)
-		cwnd = max_t(s32, tp->snd_cwnd - rs->losses, 1);
-
-	lp->prev_ca_state = state;
+		cwnd = max_t(s32, cwnd - rs->losses, 1);
 
 	if (state == TCP_CA_Recovery && prev_state != TCP_CA_Recovery) {
+		lp->next_rtt_delivered = tp->delivered;  /* start round now */
+		/* Cut unused cwnd from app behavior, TSQ, or TSO deferral: */
 		cwnd = max(cwnd, tcp_packets_in_flight(tp) + rs->acked_sacked);
-		lp->next_rtt_delivered = tp->delivered;
 		goto done;
 	} else if (prev_state >= TCP_CA_Recovery && state < TCP_CA_Recovery) {
 		/* Exiting loss recovery; restore cwnd saved before recovery. */
 		cwnd = max(cwnd, lp->prior_cwnd);
 	}
 
-	if (tp->delivered < TCP_INIT_CWND)
-		cwnd = cwnd + rs->acked_sacked;
-
 	cwnd = max(cwnd, tcp_packets_in_flight(tp) + bbr_cwnd_min_target);
 
 done:
-	tp->snd_cwnd = min(cwnd, tp->snd_cwnd_clamp);	/* apply global cap */
+	tp->snd_cwnd = min(cwnd, tp->snd_cwnd_clamp);
+}
+
+static void tcp_westwood_ack(struct sock *sk, u32 ack_flags)
+{
+	struct lp *ca = inet_csk_ca(sk);
+
+	if ((ack_flags & CA_ACK_SLOWPATH) && ca->base_rtt > rtt1) {
+		ca->hybla_en = true;
+	} else {
+		ca->hybla_en = false;
+	}
+
 }
 
 static struct tcp_congestion_ops tcp_lp __read_mostly = {
@@ -812,6 +787,7 @@ static struct tcp_congestion_ops tcp_lp __read_mostly = {
 	.cong_avoid = tcp_lp_cong_avoid,
 	.set_state	= tcp_illinois_state,
 	.cong_control  = tcp_lp_cong_control,
+	.in_ack_event	= tcp_westwood_ack,
 	.undo_cwnd	= tcp_reno_undo_cwnd,
 	.get_info	= tcp_lp_info,
 

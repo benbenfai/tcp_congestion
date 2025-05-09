@@ -22,6 +22,8 @@
 #define BETA_MAX	(BETA_SCALE/2)		/* 0.5 */
 #define BETA_BASE	BETA_MAX
 
+#define BASE_RTT_RESET_INTERVAL (10 * HZ) /* 10 seconds for base_rtt reset */
+
 static const u32 bbr_cwnd_min_target = 4;
 
 static int win_thresh __read_mostly = 20; /* Increased threshold for adaptive alpha/beta */
@@ -32,40 +34,27 @@ static int theta __read_mostly = 8; /* Increased RTT count for full alpha growth
 module_param(theta, int, 0);
 MODULE_PARM_DESC(theta, "# of fast RTT's before full growth");
 
-/* Hybla reference round trip time (default= 1/40 sec = 25 ms), in ms */
-static int rtt0 = 25;
-module_param(rtt0, int, 0644);
-MODULE_PARM_DESC(rtt0, "reference rout trip time (ms)");
-
-static const int rtt1 = 75; /* Increased threshold for Hybla activation */
-
 struct elastic {
-	u32	rtt_max;
-	u32	rtt_curr;
-	
 	u64	sum_rtt;	/* sum of rtt's measured within last rtt */
-	u16	cnt_rtt;	/* # of rtts measured within last rtt */
+
+	u32	rtt_max;        /* Max RTT used for wwf, decays */
+	u32	rtt_curr;
 	u32	base_rtt;	/* min of all rtt in usec */
-	u32	max_rtt;	/* max of all rtt in usec */
+	u32	max_rtt;	/* max rtt of the current round for alpha/beta */
 	u32	alpha;		/* Additive increase */
 	u32	beta;		/* Muliplicative decrease */
-	u16	acked;		/* # packets acked by current ACK */
-	u8	rtt_above;	/* average rtt has gone above threshold */
-	u8	rtt_low;	/* # of rtts measurements below threshold */
-
-	u8  delack;
-
 	u32 next_rtt_delivered; /* scb->tx.delivered at end of round */
 	u32	prior_cwnd;	/* prior cwnd upon entering loss recovery */
-	u32 prev_ca_state:3;     /* CA state on previous ACK */
 
-	bool  hybla_en;
-	u32   snd_cwnd_cents; /* Keeps increment values when it is <1, <<7 */
-	u32   rho;	      /* Rho parameter, integer part  */
-	u32   rho2;	      /* Rho * Rho, integer part */
-	u32   rho_3ls;	      /* Rho parameter, <<3 */
-	u32   rho2_7ls;	      /* Rho^2, <<7	*/
-	u32   minrtt_us;      /* Minimum smoothed round trip time value seen */
+	u16	cnt_rtt;	/* # of rtts measured within last rtt */
+	u16	acked;		/* # packets acked by current ACK */
+
+	u8	rtt_above;	/* average rtt has gone above threshold */
+	u8	rtt_low;	/* # of rtts measurements below threshold */
+	u8  delack;
+
+	u32 last_base_rtt_reset_jiffies; /* For periodic base_rtt reset */
+	u32 prev_ca_state:3;     /* CA state on previous ACK */
 };
 
 static void rtt_reset(struct sock *sk)
@@ -75,19 +64,6 @@ static void rtt_reset(struct sock *sk)
 	ca->cnt_rtt = 0;
 	ca->sum_rtt = 0;
 
-}
-
-/* This is called to refresh values for hybla parameters */
-static inline void hybla_recalc_param (struct sock *sk)
-{
-	struct elastic *ca = inet_csk_ca(sk);
-
-	ca->rho_3ls = max_t(u32,
-			    tcp_sk(sk)->srtt_us / (rtt0 * USEC_PER_MSEC),
-			    8U);
-	ca->rho = ca->rho_3ls >> 3;
-	ca->rho2_7ls = (ca->rho_3ls * ca->rho_3ls) << 1;
-	ca->rho2 = ca->rho2_7ls >> 7;
 }
 
 static void elastic_init(struct sock *sk)
@@ -100,12 +76,13 @@ static void elastic_init(struct sock *sk)
 	
 	ca->alpha = ALPHA_MAX;
 	ca->beta = BETA_BASE;
-	ca->base_rtt = 0x7fffffff;
+	ca->base_rtt = U32_MAX;
 	ca->max_rtt = 0;
 
 	ca->acked = 0;
 	ca->rtt_low = 0;
 	ca->rtt_above = 0;
+	ca->last_base_rtt_reset_jiffies = jiffies;
 
 	rtt_reset(sk);
 	
@@ -113,22 +90,10 @@ static void elastic_init(struct sock *sk)
 	tp->snd_ssthresh = TCP_INFINITE_SSTHRESH;
 	ca->next_rtt_delivered = tp->delivered;
 	ca->prev_ca_state = TCP_CA_Open;
-	
-	ca->rho = 0;
-	ca->rho2 = 0;
-	ca->rho_3ls = 0;
-	ca->rho2_7ls = 0;
-	ca->snd_cwnd_cents = 0;
-	ca->hybla_en = true;
-	tp->snd_cwnd = 2;
+
+	tp->snd_cwnd = 2; /* Initial cwnd, bbr_cwnd_min_target might be too high for some scenarios */
 	tp->snd_cwnd_clamp = 65535;
 
-	/* 1st Rho measurement based on initial srtt */
-	hybla_recalc_param(sk);
-
-	/* set minimum rtt as this is the 1st ever seen */
-	ca->minrtt_us = tp->srtt_us;
-	tp->snd_cwnd = ca->rho;
 }
 
 /* Calculate value scaled by beta */
@@ -150,7 +115,6 @@ static u32 tcp_lp_ssthresh(struct sock *sk)
 	return max(tp->snd_cwnd - calculate_beta_scaled_value(sk, tp->snd_cwnd), 2U);
 	
 }
-
 
 /* Maximum queuing delay */
 static inline u32 max_delay(const struct elastic *ca)
@@ -230,24 +194,37 @@ static void update_params(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elastic *ca = inet_csk_ca(sk);
 
+	/* Update alpha and beta based on the current round's metrics, using current base_rtt */
 	if (tp->snd_cwnd < win_thresh) {
 		ca->alpha = ALPHA_BASE;
 		ca->beta = BETA_BASE;
 	} else if (ca->cnt_rtt > 0) {
-		u32 dm = max_delay(ca);
-		u32 da = avg_delay(ca);
+		/* ca->max_rtt here is the peak RTT of the round that just completed.
+		 * ca->base_rtt is the established minimum from previous rounds.
+		 */
+		u32 dm = max_delay(ca); /* Uses ca->max_rtt (current round peak) and current ca->base_rtt */
+		u32 da = avg_delay(ca); /* Uses ca->sum_rtt, ca->cnt_rtt and current ca->base_rtt */
 
 		ca->alpha = alpha(ca, da, dm);
 		ca->beta = beta(da, dm);
 	}
-	
-	/* Decay rtt_max towards rtt_curr to adapt to faster paths over time */
-	//ca->rtt_max = max(ca->rtt_curr, ca->rtt_max - (ca->rtt_max >> 4));
 
-	/* Ensure rtt_max reflects the actual maximum observed in the last round */
-	//ca->rtt_max = max(ca->rtt_max, ca->max_rtt);
-	
-	rtt_reset(sk);
+	/* Refresh ca->rtt_max (for wwf) with the peak RTT from the completed round (ca->max_rtt).
+	 * This happens every round for better responsiveness.
+	 */
+	ca->rtt_max = ca->max_rtt; /* ca->max_rtt is the peak of the just-finished round */
+	/* If ca->max_rtt was 0 (no valid samples in the round), provide a fallback for ca->rtt_max. */
+	if (ca->rtt_max == 0) {
+		ca->rtt_max = tp->srtt_us ? tp->srtt_us : 1; /* Use smoothed RTT or 1us as a tiny default */
+	}
+
+	/* Periodic reset of base_rtt for the *next* round, to allow it to increase if path changes */
+	if (!before(jiffies, ca->last_base_rtt_reset_jiffies + BASE_RTT_RESET_INTERVAL)) {
+		ca->base_rtt = U32_MAX; /* Reset to discover new minimum for the next round */
+		ca->last_base_rtt_reset_jiffies = jiffies;
+	}
+
+	rtt_reset(sk); /* Clears sum_rtt, cnt_rtt for the next round's average calculation */
 }
 
 static void tcp_illinois_reset(struct sock *sk)
@@ -275,18 +252,6 @@ static void tcp_illinois_state(struct sock *sk, u8 new_state)
 	}
 }
 
-static void tcp_westwood_ack(struct sock *sk, u32 ack_flags)
-{
-	struct elastic *ca = inet_csk_ca(sk);
-
-	if ((ack_flags & CA_ACK_SLOWPATH) && ca->base_rtt > rtt1) {
-		ca->hybla_en = true;
-	} else {
-		ca->hybla_en = false;
-	}
-
-}
-
 static void tcp_illinois_pkts_acked(struct sock *sk, const struct rate_sample *rs)
 {
 	
@@ -294,7 +259,6 @@ static void tcp_illinois_pkts_acked(struct sock *sk, const struct rate_sample *r
 	struct elastic *ca = inet_csk_ca(sk);
 
 	u32 rtt_us = rs->rtt_us;
-	u32 new_rtt = rtt_us+1;
 
 	/* dup ack, no rtt sample */
 	if (rtt_us < 0)
@@ -321,11 +285,7 @@ static void tcp_illinois_pkts_acked(struct sock *sk, const struct rate_sample *r
 		}
 	}
 
-	if (new_rtt <= ca->rtt_max && new_rtt > rtt1 && ca->rtt_curr < new_rtt) {
-		ca->rtt_curr = (new_rtt >> 2) + ((ca->rtt_curr * 3) >> 2); /* Smoothed more (25% new / 75% old) */
-	} else {
-		ca->rtt_curr = new_rtt;
-	}
+	ca->rtt_curr = rtt_us;
 
 	if (ca->rtt_curr > ca->rtt_max) {
 		ca->rtt_max = ca->rtt_curr;
@@ -341,95 +301,6 @@ static void tcp_illinois_pkts_acked(struct sock *sk, const struct rate_sample *r
 	ca->sum_rtt += rtt_us;
 }
 
-static inline u32 hybla_fraction(u32 odds)
-{
-	static const u32 fractions[] = {
-		128, 139, 152, 165, 181, 197, 215, 234,
-	};
-
-	return (odds < ARRAY_SIZE(fractions)) ? fractions[odds] : 128;
-}
-
-/* TCP Hybla main routine.
- * This is the algorithm behavior:
- *     o Recalc Hybla parameters if min_rtt has changed
- *     o Give cwnd a new value based on the model proposed
- *     o remember increments <1
- */
-static void hybla_cong_avoid(struct sock *sk, u32 ack, u32 acked)
-{
-	struct tcp_sock *tp = tcp_sk(sk);
-	struct elastic *ca = inet_csk_ca(sk);
-	u32 increment, odd, rho_fractions;
-	int is_slowstart = 0;
-
-	/*  Recalculate rho only if this srtt is the lowest */
-	if (tp->srtt_us < ca->minrtt_us) {
-		hybla_recalc_param(sk);
-		ca->minrtt_us = tp->srtt_us;
-	}
-
-	if (!ca->hybla_en) {
-		tcp_reno_cong_avoid(sk, ack, acked);
-		return;
-	}
-
-	if (ca->rho == 0)
-		hybla_recalc_param(sk);
-
-	rho_fractions = ca->rho_3ls - (ca->rho << 3);
-
-	if (tcp_in_slow_start(tp)) {
-		/*
-		 * slow start
-		 *      INC = 2^RHO - 1
-		 * This is done by splitting the rho parameter
-		 * into 2 parts: an integer part and a fraction part.
-		 * Inrement<<7 is estimated by doing:
-		 *	       [2^(int+fract)]<<7
-		 * that is equal to:
-		 *	       (2^int)	*  [(2^fract) <<7]
-		 * 2^int is straightly computed as 1<<int,
-		 * while we will use hybla_slowstart_fraction_increment() to
-		 * calculate 2^fract in a <<7 value.
-		 */
-		is_slowstart = 1;
-		increment = ((1 << min(ca->rho, 16U)) *
-			hybla_fraction(rho_fractions)) - 128;
-	} else {
-		/*
-		 * congestion avoidance
-		 * INC = RHO^2 / W
-		 * as long as increment is estimated as (rho<<7)/window
-		 * it already is <<7 and we can easily count its fractions.
-		 */
-		increment = ca->rho2_7ls / tp->snd_cwnd;
-		if (increment < 128)
-			tp->snd_cwnd_cnt++;
-	}
-
-	odd = increment % 128;
-	tp->snd_cwnd += increment >> 7;
-	ca->snd_cwnd_cents += odd;
-
-	/* check when fractions goes >=128 and increase cwnd by 1. */
-	while (ca->snd_cwnd_cents >= 128) {
-		tp->snd_cwnd++;
-		ca->snd_cwnd_cents -= 128;
-		tp->snd_cwnd_cnt = 0;
-	}
-	/* check when cwnd has not been incremented for a while */
-	if (increment == 0 && odd == 0 && tp->snd_cwnd_cnt >= tp->snd_cwnd) {
-		tp->snd_cwnd++;
-		tp->snd_cwnd_cnt = 0;
-	}
-	/* clamp down slowstart cwnd to ssthresh value. */
-	if (is_slowstart)
-		tp->snd_cwnd = min(tp->snd_cwnd, tp->snd_ssthresh);
-
-	tp->snd_cwnd = min_t(u32, tp->snd_cwnd, tp->snd_cwnd_clamp);
-}
-
 static void elastic_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -438,40 +309,44 @@ static void elastic_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	if (!tcp_is_cwnd_limited(sk))
 		return;
 
-	if (tcp_in_slow_start(tp))
-		hybla_cong_avoid(sk, ack, acked);
-	else {
-		u64 wwf64 = min(UINT_MAX, int_sqrt64(tp->snd_cwnd * ELASTIC_UNIT * ELASTIC_UNIT * ca->rtt_max / ca->rtt_curr));
-		u32 wwf = wwf64 >> ELASTIC_SCALE;
+	if (tcp_in_slow_start(tp)) {
+		tcp_slow_start(tp, acked);
+	} else { /* Congestion Avoidance */
+		u64 wwf64;
+		u32 wwf;
+
+		/* Ensure base_rtt is not zero to prevent division by zero */
+		if (unlikely(ca->base_rtt == 0)) {
+			/* Fallback to simple Reno-like AI if base_rtt is not yet known */
+			tcp_cong_avoid_ai(tp, tp->snd_cwnd, 1);
+			goto clamp_cwnd; /* Go to common clamping */
+		}
+
+		wwf64 = min(UINT_MAX, int_sqrt64(tp->snd_cwnd * ELASTIC_UNIT * ELASTIC_UNIT * ca->rtt_max / ca->base_rtt));
+		wwf = wwf64 >> ELASTIC_SCALE;
+
 		if (wwf > 0) {
 			tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 		} else {
+
 			u32 delta;
-
-			ca->rtt_max = max(ca->rtt_max, ca->max_rtt);
-			ca->rtt_curr = min(ca->base_rtt, tp->srtt_us);
-
-			if (ca->hybla_en) {
-				hybla_cong_avoid(sk, ack, acked);
-				return;
-			}
-
-			/* snd_cwnd_cnt is # of packets since last cwnd increment */
+			/* ca->acked is set to rs->acked_sacked in illinois_update */
 			tp->snd_cwnd_cnt += ca->acked;
-			ca->acked = 1;
 
 			/* This is close approximation of:
 			 * tp->snd_cwnd += alpha/tp->snd_cwnd
 			*/
 			delta = (tp->snd_cwnd_cnt * ca->alpha) >> ALPHA_SHIFT;
-			if (delta >= tp->snd_cwnd) {
+			if (delta >= tp->snd_cwnd && tp->snd_cwnd > 0) { /* Ensure snd_cwnd > 0 for division */
 				tp->snd_cwnd = min(tp->snd_cwnd + delta / tp->snd_cwnd,
 						   (u32)tp->snd_cwnd_clamp);
 				tp->snd_cwnd_cnt = 0;
 			}
-
 		}
 	}
+
+clamp_cwnd:
+	tp->snd_cwnd = min_t(u32, tp->snd_cwnd, tp->snd_cwnd_clamp);
 }
 
 static void illinois_update(struct sock *sk, const struct rate_sample *rs)
@@ -488,8 +363,7 @@ static void illinois_update(struct sock *sk, const struct rate_sample *rs)
 	if (!before(rs->prior_delivered, ca->next_rtt_delivered)) {
 		ca->next_rtt_delivered = tp->delivered;
 		update_params(sk);
-		/* Keep base_rtt tracking long-term minimum via tcp_illinois_pkts_acked */
-		ca->max_rtt = ca->base_rtt; /* Reset max_rtt relative to base for the new round */
+		ca->max_rtt = ca->base_rtt;
 	}
 
 	/* Record the last non-app-limited or the highest app-limited bw */
@@ -524,7 +398,7 @@ static void tcp_lp_cong_control(struct sock *sk, const struct rate_sample *rs)
 	 * Then, in bbr_set_cwnd() we slow start up toward the target cwnd.
 	 */
 	if (rs->losses > 0)
-		cwnd = max_t(s32, cwnd - rs->losses, 1);
+		cwnd = max_t(u32, cwnd - rs->losses, 1);
 
 	if (state == TCP_CA_Recovery && prev_state != TCP_CA_Recovery) {
 		ca->next_rtt_delivered = tp->delivered;  /* start round now */
@@ -545,29 +419,14 @@ done:
 
 static void elastic_event(struct sock *sk, enum tcp_ca_event event)
 {
-	struct tcp_sock *tp = tcp_sk(sk);
+	//struct tcp_sock *tp = tcp_sk(sk);
 	struct elastic *ca = inet_csk_ca(sk);
 
 	switch (event) {
 	case CA_EVENT_LOSS:
-		ca->rtt_max = max(ca->max_rtt, ca->rtt_curr);
+		ca->rtt_max = 0;
 		ca->delack = 0;
 		break;
-	case CA_EVENT_CWND_RESTART:
-		ca->rtt_max = max((tp->srtt_us * 3 + ca->rtt_max * 7) / 10, ca->rtt_curr);
-		break;
-	/*
-	case CA_EVENT_COMPLETE_CWR:
-		{
-			u32 mitigated_cwnd;
-
-			mitigated_cwnd = max(ca->prior_cwnd - calculate_beta_scaled_value(sk, ca->prior_cwnd), tcp_packets_in_flight(tp) + bbr_cwnd_min_target);
-
-			tp->snd_ssthresh = mitigated_cwnd;
-			tp->snd_cwnd = mitigated_cwnd;
-		}
-		break;
-	*/
 	default:
 		/* don't care */
 		break;
@@ -575,49 +434,14 @@ static void elastic_event(struct sock *sk, enum tcp_ca_event event)
 	
 }
 
-/* Extract info for Tcp socket info provided via netlink. */
-static size_t tcp_illinois_info(struct sock *sk, u32 ext, int *attr,
-				union tcp_cc_info *info)
-{
-	struct tcp_sock *tp = tcp_sk(sk);
-	const struct elastic *ca = inet_csk_ca(sk);
-
-	if (ext & (1 << (INET_DIAG_VEGASINFO - 1))) {
-		info->vegas.tcpv_enabled = 1;
-		info->vegas.tcpv_rttcnt = ca->cnt_rtt;
-		info->vegas.tcpv_minrtt = ca->base_rtt;
-		info->vegas.tcpv_rtt = min(ca->rtt_curr, tp->srtt_us);
-
-		if (info->vegas.tcpv_rttcnt > 0) {
-			u64 t = ca->sum_rtt;
-
-			do_div(t, info->vegas.tcpv_rttcnt);
-			info->vegas.tcpv_rtt = t;
-		}
-		*attr = INET_DIAG_VEGASINFO;
-		return sizeof(struct tcpvegas_info);
-	}
-	return 0;
-}
-
-static u32 tcp_cus_undo_cwnd(struct sock *sk)
-{
-	const struct tcp_sock *tp = tcp_sk(sk);
-	struct elastic *ca = inet_csk_ca(sk);
-
-	return max(tp->snd_cwnd, ca->prior_cwnd);
-}
-
 static struct tcp_congestion_ops tcp_elastic __read_mostly = {
 	.name		= "elastic",
 	.owner		= THIS_MODULE,
 	.init		= elastic_init,
 	.ssthresh   = tcp_lp_ssthresh,
-	.undo_cwnd	= tcp_cus_undo_cwnd,
+	.undo_cwnd	= tcp_reno_undo_cwnd,
 	.cong_avoid	= elastic_cong_avoid,
 	.cong_control  = tcp_lp_cong_control,
-	.in_ack_event	= tcp_westwood_ack,
-	.get_info	= tcp_illinois_info,
 	.set_state	= tcp_illinois_state,
 	.cwnd_event	= elastic_event
 };

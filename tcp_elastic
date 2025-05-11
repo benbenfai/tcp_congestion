@@ -2,7 +2,6 @@
 #include <net/tcp.h>
 
 #include <linux/skbuff.h>
-#include <linux/inet_diag.h>
 #include <asm/div64.h>
 #include <linux/math64.h>
 
@@ -91,7 +90,7 @@ static void elastic_init(struct sock *sk)
 	ca->next_rtt_delivered = tp->delivered;
 	ca->prev_ca_state = TCP_CA_Open;
 
-	tp->snd_cwnd = 2; /* Initial cwnd, bbr_cwnd_min_target might be too high for some scenarios */
+	tp->snd_cwnd = 2;
 	tp->snd_cwnd_clamp = 65535;
 
 }
@@ -99,7 +98,7 @@ static void elastic_init(struct sock *sk)
 /* Calculate value scaled by beta */
 static inline u32 calculate_beta_scaled_value(struct sock *sk, u32 value)
 {
-	struct elastic *ca = inet_csk_ca(sk);
+	const struct elastic *ca = inet_csk_ca(sk);
 
 	return (value * ca->beta) >> BETA_SHIFT;
 }
@@ -191,40 +190,28 @@ static u32 beta(u32 da, u32 dm)
 
 static void update_params(struct sock *sk)
 {
-	struct tcp_sock *tp = tcp_sk(sk);
+	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elastic *ca = inet_csk_ca(sk);
 
-	/* Update alpha and beta based on the current round's metrics, using current base_rtt */
 	if (tp->snd_cwnd < win_thresh) {
 		ca->alpha = ALPHA_BASE;
 		ca->beta = BETA_BASE;
 	} else if (ca->cnt_rtt > 0) {
-		/* ca->max_rtt here is the peak RTT of the round that just completed.
-		 * ca->base_rtt is the established minimum from previous rounds.
-		 */
-		u32 dm = max_delay(ca); /* Uses ca->max_rtt (current round peak) and current ca->base_rtt */
-		u32 da = avg_delay(ca); /* Uses ca->sum_rtt, ca->cnt_rtt and current ca->base_rtt */
+		u32 dm = max_delay(ca);
+		u32 da = avg_delay(ca);
 
 		ca->alpha = alpha(ca, da, dm);
 		ca->beta = beta(da, dm);
 	}
 
-	/* Refresh ca->rtt_max (for wwf) with the peak RTT from the completed round (ca->max_rtt).
-	 * This happens every round for better responsiveness.
-	 */
-	ca->rtt_max = ca->max_rtt; /* ca->max_rtt is the peak of the just-finished round */
-	/* If ca->max_rtt was 0 (no valid samples in the round), provide a fallback for ca->rtt_max. */
-	if (ca->rtt_max == 0) {
-		ca->rtt_max = tp->srtt_us ? tp->srtt_us : 1; /* Use smoothed RTT or 1us as a tiny default */
-	}
-
-	/* Periodic reset of base_rtt for the *next* round, to allow it to increase if path changes */
 	if (!before(jiffies, ca->last_base_rtt_reset_jiffies + BASE_RTT_RESET_INTERVAL)) {
-		ca->base_rtt = U32_MAX; /* Reset to discover new minimum for the next round */
+		ca->rtt_max = ca->max_rtt;
+
+		ca->base_rtt = U32_MAX;
 		ca->last_base_rtt_reset_jiffies = jiffies;
 	}
 
-	rtt_reset(sk); /* Clears sum_rtt, cnt_rtt for the next round's average calculation */
+	rtt_reset(sk);
 }
 
 static void tcp_illinois_reset(struct sock *sk)
@@ -311,18 +298,12 @@ static void elastic_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 
 	if (tcp_in_slow_start(tp)) {
 		tcp_slow_start(tp, acked);
-	} else { /* Congestion Avoidance */
+	} else {
 		u64 wwf64;
 		u32 wwf;
 
-		/* Ensure base_rtt is not zero to prevent division by zero */
-		if (unlikely(ca->base_rtt == 0)) {
-			/* Fallback to simple Reno-like AI if base_rtt is not yet known */
-			tcp_cong_avoid_ai(tp, tp->snd_cwnd, 1);
-			goto clamp_cwnd; /* Go to common clamping */
-		}
-
-		wwf64 = min(UINT_MAX, int_sqrt64(tp->snd_cwnd * ELASTIC_UNIT * ELASTIC_UNIT * ca->rtt_max / ca->base_rtt));
+		wwf64 = (u64)tp->snd_cwnd * ELASTIC_UNIT * ELASTIC_UNIT * ca->rtt_max / ((ca->rtt_curr >> 1) + (ca->base_rtt >> 1));
+		wwf64 = int_sqrt64(wwf64);
 		wwf = wwf64 >> ELASTIC_SCALE;
 
 		if (wwf > 0) {
@@ -345,13 +326,11 @@ static void elastic_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		}
 	}
 
-clamp_cwnd:
-	tp->snd_cwnd = min_t(u32, tp->snd_cwnd, tp->snd_cwnd_clamp);
 }
 
 static void illinois_update(struct sock *sk, const struct rate_sample *rs)
 {
-	struct tcp_sock *tp = tcp_sk(sk);
+	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elastic *ca = inet_csk_ca(sk);
 
 	ca->acked = rs->acked_sacked;

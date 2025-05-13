@@ -287,7 +287,7 @@ static void tcp_elastic_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		u32 d;
 
 		if (ca->rtt_curr > ca->base_rtt) {
-			d = ((ca->rtt_curr >> 1) + (ca->base_rtt >> 1));
+			d = (ca->rtt_curr >> 1) + (ca->base_rtt >> 1);
 		} else {
 			d = ca->rtt_curr;
 		}

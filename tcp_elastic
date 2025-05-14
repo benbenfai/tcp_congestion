@@ -255,7 +255,7 @@ static void tcp_elastic_pkts_acked(struct sock *sk, const struct rate_sample *rs
 		rtt_us = RTT_MAX;
 
 
-	ca->rtt_curr = rtt_us+1;
+	ca->rtt_curr = rtt_us;
 
 	if (ca->rtt_curr > ca->rtt_max) {
 		ca->rtt_max = ca->rtt_curr;
@@ -289,7 +289,7 @@ static void tcp_elastic_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		if (ca->rtt_curr > ca->base_rtt) {
 			d = (ca->rtt_curr >> 1) + (ca->base_rtt >> 1);
 		} else {
-			d = ca->rtt_curr;
+			d = ca->rtt_curr+1;
 		}
 
 		wwf64 = tp->snd_cwnd * ELASTIC_UNIT * ELASTIC_UNIT * ca->rtt_max / d;
@@ -369,21 +369,6 @@ done:
 
 }
 
-static void tcp_elastic_event(struct sock *sk, enum tcp_ca_event event)
-{
-	struct elastic *ca = inet_csk_ca(sk);
-
-	switch (event) {
-	case CA_EVENT_LOSS:
-		ca->rtt_max = 0;
-		break;
-	default:
-		/* don't care */
-		break;
-	}
-	
-}
-
 static struct tcp_congestion_ops tcp_elastic __read_mostly = {
 	.name		= "elastic",
 	.owner		= THIS_MODULE,
@@ -392,8 +377,7 @@ static struct tcp_congestion_ops tcp_elastic __read_mostly = {
 	.undo_cwnd	= tcp_reno_undo_cwnd,
 	.cong_avoid	= tcp_elastic_cong_avoid,
 	.cong_control  = tcp_elastic_cong_control,
-	.set_state	= tcp_elastic_set_state,
-	.cwnd_event	= tcp_elastic_event
+	.set_state	= tcp_elastic_set_state
 };
 
 static int __init elastic_register(void)

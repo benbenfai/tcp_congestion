@@ -10,9 +10,7 @@
 
 #define ALPHA_SHIFT	7
 #define ALPHA_SCALE	(1u<<ALPHA_SHIFT)
-#define ALPHA_MIN	((3*ALPHA_SCALE)/10)	/* ~0.3 */
 #define ALPHA_MAX	(10*ALPHA_SCALE)	/* 10.0 */
-#define ALPHA_BASE	ALPHA_SCALE		/* 1.0 */
 #define RTT_MAX		(U32_MAX / ALPHA_MAX)	/* 3.3 secs */
 
 #define BETA_SHIFT	6
@@ -23,16 +21,11 @@
 
 #define BASE_RTT_RESET_INTERVAL (10 * HZ) /* 10 seconds for base_rtt reset */
 
-static const u32 min_target = 1;
 static const u32 bbr_cwnd_min_target = 4;
 
 static int win_thresh __read_mostly = 20; /* Increased threshold for adaptive alpha/beta */
 module_param(win_thresh, int, 0);
 MODULE_PARM_DESC(win_thresh, "Window threshold for starting adaptive sizing");
-
-static int theta __read_mostly = 8; /* Increased RTT count for full alpha growth recovery */
-module_param(theta, int, 0);
-MODULE_PARM_DESC(theta, "# of fast RTT's before full growth");
 
 struct elastic {
 	u64	sum_rtt;	/* sum of rtt's measured within last rtt */
@@ -41,7 +34,6 @@ struct elastic {
 	u32	rtt_curr;
 	u32	base_rtt;	/* min of all rtt in usec */
 	u32	max_rtt;	/* max rtt of the current round for alpha/beta */
-	u32	alpha;		/* Additive increase */
 	u32	beta;		/* Muliplicative decrease */
 	u32 next_rtt_delivered; /* scb->tx.delivered at end of round */
 	u32	prior_cwnd;	/* prior cwnd upon entering loss recovery */
@@ -53,7 +45,7 @@ struct elastic {
 
 	u32 last_base_rtt_reset_jiffies; /* For periodic base_rtt reset */
 	u32 prev_ca_state:3;     /* CA state on previous ACK */
-};
+} __attribute__((__packed__));
 
 static void rtt_reset(struct sock *sk)
 {
@@ -71,8 +63,7 @@ static void tcp_elastic_init(struct sock *sk)
 
 	ca->rtt_max = tp->srtt_us;
 	ca->rtt_curr = ca->rtt_max+1;
-	
-	ca->alpha = ALPHA_MAX;
+
 	ca->beta = BETA_BASE;
 	ca->base_rtt = U32_MAX;
 	ca->max_rtt = 0;
@@ -128,35 +119,6 @@ static inline u32 avg_delay(const struct elastic *ca)
 	return t - ca->base_rtt;
 }
 
-static u32 alpha(struct elastic *ca, u32 da, u32 dm)
-{
-	u32 d1 = dm / 100;	/* Low threshold */
-
-	if (da <= d1) {
-		/* If never got out of low delay zone, then use max */
-		if (!ca->rtt_above)
-			return ALPHA_MAX;
-		/* Wait for 5 good RTT's before allowing alpha to go alpha max.
-		 * This prevents one good RTT from causing sudden window increase.
-		 */
-
-		if (++ca->rtt_low < theta)
-			return ca->alpha;
-
-		ca->rtt_low = 0;
-		ca->rtt_above = 0;
-		return ALPHA_MAX;
-	}
-
-	ca->rtt_above = 1;
-
-	dm -= d1;
-	da -= d1;
-	
-	return (dm * ALPHA_MAX) /
-		(dm + (da  * (ALPHA_MAX - ALPHA_MIN)) / ALPHA_MIN);
-}
-
 static u32 beta(u32 da, u32 dm)
 {
 	u32 d2, d3;
@@ -192,18 +154,16 @@ static void update_params(struct sock *sk)
 	struct elastic *ca = inet_csk_ca(sk);
 
 	if (tp->snd_cwnd < win_thresh) {
-		ca->alpha = ALPHA_BASE;
 		ca->beta = BETA_BASE;
 	} else if (ca->cnt_rtt > 0) {
 		u32 dm = max_delay(ca);
 		u32 da = avg_delay(ca);
 
-		ca->alpha = alpha(ca, da, dm);
 		ca->beta = beta(da, dm);
 	}
 
 	if (!before(jiffies, ca->last_base_rtt_reset_jiffies + BASE_RTT_RESET_INTERVAL)) {
-		if (ca->max_rtt > tp->srtt_us)
+		if (ca->max_rtt > ca->max_rtt)
 			ca->rtt_max = ca->max_rtt;
 
 		ca->max_rtt = ca->base_rtt;
@@ -218,7 +178,6 @@ static void tcp_elastic_reset(struct sock *sk)
 {
 	struct elastic *ca = inet_csk_ca(sk);
 
-	ca->alpha = ALPHA_BASE;
 	ca->beta = BETA_BASE;
 	ca->rtt_low = 0;
 	ca->rtt_above = 0;
@@ -231,11 +190,8 @@ static void tcp_elastic_set_state(struct sock *sk, u8 new_state)
 	struct elastic *ca = inet_csk_ca(sk);
 
 	if (new_state == TCP_CA_Loss) {
-
 		ca->prev_ca_state = TCP_CA_Loss;
-
 		tcp_elastic_reset(sk);
-
 	}
 }
 
@@ -244,7 +200,6 @@ static void tcp_elastic_pkts_acked(struct sock *sk, const struct rate_sample *rs
 	struct elastic *ca = inet_csk_ca(sk);
 
 	u32 rtt_us = rs->rtt_us;
-	rtt_us = max(rtt_us, min_target);
 
 	/* dup ack, no rtt sample */
 	if (rtt_us < 0)
@@ -254,9 +209,7 @@ static void tcp_elastic_pkts_acked(struct sock *sk, const struct rate_sample *rs
 	if (rtt_us > RTT_MAX)
 		rtt_us = RTT_MAX;
 
-
 	ca->rtt_curr = rtt_us;
-
 	if (ca->rtt_curr > ca->rtt_max) {
 		ca->rtt_max = ca->rtt_curr;
 	}
@@ -374,10 +327,10 @@ static struct tcp_congestion_ops tcp_elastic __read_mostly = {
 	.name		= "elastic",
 	.owner		= THIS_MODULE,
 	.init		= tcp_elastic_init,
-	.ssthresh   = tcp_elastic_ssthresh,
+	.ssthresh	= tcp_elastic_ssthresh,
 	.undo_cwnd	= tcp_reno_undo_cwnd,
 	.cong_avoid	= tcp_elastic_cong_avoid,
-	.cong_control  = tcp_elastic_cong_control,
+	.cong_control   = tcp_elastic_cong_control,
 	.set_state	= tcp_elastic_set_state
 };
 

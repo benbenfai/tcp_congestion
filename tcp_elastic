@@ -35,13 +35,10 @@ struct elastic {
 	u32	base_rtt;	/* min of all rtt in usec */
 	u32	max_rtt;	/* max rtt of the current round for alpha/beta */
 	u32	beta;		/* Muliplicative decrease */
-	u32 next_rtt_delivered; /* scb->tx.delivered at end of round */
+	u32 	next_rtt_delivered; /* scb->tx.delivered at end of round */
 	u32	prior_cwnd;	/* prior cwnd upon entering loss recovery */
 
 	u16	cnt_rtt;	/* # of rtts measured within last rtt */
-
-	u8	rtt_above;	/* average rtt has gone above threshold */
-	u8	rtt_low;	/* # of rtts measurements below threshold */
 
 	u32 last_base_rtt_reset_jiffies; /* For periodic base_rtt reset */
 	u32 prev_ca_state:3;     /* CA state on previous ACK */
@@ -68,8 +65,6 @@ static void tcp_elastic_init(struct sock *sk)
 	ca->base_rtt = U32_MAX;
 	ca->max_rtt = 0;
 
-	ca->rtt_low = 0;
-	ca->rtt_above = 0;
 	ca->last_base_rtt_reset_jiffies = jiffies;
 
 	rtt_reset(sk);
@@ -173,8 +168,6 @@ static void tcp_elastic_reset(struct sock *sk)
 	struct elastic *ca = inet_csk_ca(sk);
 
 	ca->beta = BETA_BASE;
-	ca->rtt_low = 0;
-	ca->rtt_above = 0;
 	rtt_reset(sk);
 }
 

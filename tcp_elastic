@@ -21,6 +21,7 @@
 
 #define BASE_RTT_RESET_INTERVAL (10 * HZ) /* 10 seconds for base_rtt reset */
 
+static const u32 bbr_lt_intvl_min_rtts = 4;
 static const u32 bbr_cwnd_min_target = 4;
 
 static int win_thresh __read_mostly = 20; /* Increased threshold for adaptive alpha/beta */
@@ -38,6 +39,8 @@ struct elastic {
 	u32	beta;		/* Muliplicative decrease */
 	u32 next_rtt_delivered; /* scb->tx.delivered at end of round */
 	u32	prior_cwnd;	/* prior cwnd upon entering loss recovery */
+
+	u32	lt_rtt_cnt:7;
 
 	u16	cnt_rtt;	/* # of rtts measured within last rtt */
 
@@ -150,9 +153,7 @@ static void update_params(struct sock *sk)
 
 	if (!before(jiffies, ca->last_base_rtt_reset_jiffies + BASE_RTT_RESET_INTERVAL)) {
 		ca->rtt_max = ca->max_rtt;
-		ca->last_base_rtt = ca->base_rtt;
 		ca->max_rtt = ca->base_rtt;
-		ca->base_rtt = U32_MAX;
 		ca->last_base_rtt_reset_jiffies = jiffies;
 	}
 
@@ -241,7 +242,7 @@ static void tcp_elastic_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		wwf = wwf64 >> ELASTIC_SCALE;
 		wwf = max(wwf, acked);
 	}
-	
+
 	tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 }
 
@@ -253,18 +254,27 @@ static void tcp_elastic_update(struct sock *sk, const struct rate_sample *rs)
 	if (rs->delivered < 0 || rs->interval_us <= 0)
 		return; /* Not a valid observation */	
 
+	tcp_elastic_pkts_acked(sk, rs);
+
 	/* See if we've reached the next RTT */
 	if (!before(rs->prior_delivered, ca->next_rtt_delivered)) {
 		ca->next_rtt_delivered = tp->delivered;
+		ca->lt_rtt_cnt++;
+	}
+	
+	if (rs->is_app_limited) {
 		update_params(sk);
+		ca->lt_rtt_cnt = 0;
+		return;
 	}
 
-	/* Record the last non-app-limited or the highest app-limited bw */
-	if (!rs->is_app_limited ||
-	    ((u64)rs->delivered * tp->rate_interval_us >=
-	     (u64)tp->rate_delivered * rs->interval_us)) {
-		tcp_elastic_pkts_acked(sk, rs);
+	if (ca->lt_rtt_cnt > 4 * bbr_lt_intvl_min_rtts) {
+		update_params(sk);
+		ca->lt_rtt_cnt = 0;
+		ca->last_base_rtt = ca->base_rtt;
+		ca->base_rtt = U32_MAX;
 	}
+
 }
 
 static void tcp_elastic_cong_control(struct sock *sk, const struct rate_sample *rs)
@@ -301,8 +311,6 @@ static void tcp_elastic_cong_control(struct sock *sk, const struct rate_sample *
 		/* Exiting loss recovery; restore cwnd saved before recovery. */
 		cwnd = max(cwnd, ca->prior_cwnd);
 	}
-
-	cwnd = max(cwnd, tcp_packets_in_flight(tp) + bbr_cwnd_min_target);
 
 done:
 	tp->snd_cwnd = min(cwnd, tp->snd_cwnd_clamp);

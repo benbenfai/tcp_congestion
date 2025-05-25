@@ -66,7 +66,7 @@ static void tcp_elastic_init(struct sock *sk)
 
 	ca->beta = BETA_BASE;
 	ca->base_rtt = U32_MAX;
-	ca->last_base_rtt = tp->srtt_us;
+	ca->last_base_rtt = 0;
 	ca->max_rtt = 0;
 
 	ca->last_rtt_reset_jiffies = jiffies;
@@ -170,7 +170,6 @@ static void tcp_elastic_set_state(struct sock *sk, u8 new_state)
 	if (new_state == TCP_CA_Loss) {
 		ca->prev_ca_state = TCP_CA_Loss;
 		tcp_elastic_reset(sk);
-		ca->lt_rtt_cnt++;
 	}
 }
 
@@ -188,7 +187,8 @@ static void tcp_elastic_pkts_acked(struct sock *sk, const struct rate_sample *rs
 	if (rtt_us > RTT_MAX)
 		rtt_us = RTT_MAX;
 
-	ca->rtt_curr = rtt_us;
+	if(!rs->is_ack_delayed)
+		ca->rtt_curr = rtt_us;
 
 	ca->base_rtt = min_not_zero(ca->base_rtt, rtt_us);
 
@@ -218,16 +218,15 @@ static void tcp_elastic_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 			return;
 	} else {
 		u64 wwf64;
-		u32 d;
+		u32 d = max(ca->rtt_max, ca->max_rtt);
+		u32 c = min(ca->base_rtt, ca->last_base_rtt);
 		u32 m;
 
-		if (ca->rtt_curr > ca->last_base_rtt) {
-			m = (ca->rtt_curr >> 1) + (ca->last_base_rtt >> 1);
+		if (ca->rtt_curr > c) {
+			m = (ca->rtt_curr >> 1) + (c >> 1);
 		} else {
 			m = ca->rtt_curr;
 		}
-		
-		d = max(ca->rtt_max, ca->max_rtt);
 
 		wwf64 = tp->snd_cwnd * ELASTIC_UNIT * ELASTIC_UNIT * d / m;
 		wwf64 = int_sqrt64(wwf64);
@@ -246,8 +245,6 @@ static void tcp_elastic_update(struct sock *sk, const struct rate_sample *rs)
 	if (rs->delivered < 0 || rs->interval_us <= 0)
 		return; /* Not a valid observation */	
 
-	tcp_elastic_pkts_acked(sk, rs);
-
 	/* See if we've reached the next RTT */
 	if (!before(rs->prior_delivered, ca->next_rtt_delivered)) {
 		ca->next_rtt_delivered = tp->delivered;
@@ -257,20 +254,28 @@ static void tcp_elastic_update(struct sock *sk, const struct rate_sample *rs)
 	if (rs->is_app_limited) {
 		update_params(sk);
 		ca->lt_rtt_cnt = 0;
-		return;
 	}
 
 	if (ca->lt_rtt_cnt > 4 * bbr_lt_intvl_min_rtts) {
 		ca->lt_rtt_cnt = 0;
-		ca->last_base_rtt = (ca->last_base_rtt >> 1) + (ca->base_rtt >> 1);
+		if (ca->last_base_rtt > 0) {
+			ca->last_base_rtt = (ca->last_base_rtt >> 1) + (ca->base_rtt >> 1);
+		} else {
+			ca->last_base_rtt = ca->base_rtt;
+		}
 		ca->base_rtt = U32_MAX;
 	}
-	
-	if (after(tcp_jiffies32, ca->last_rtt_reset_jiffies + BASE_RTT_RESET_INTERVAL) && !rs->is_ack_delayed) {
+
+	if (after(tcp_jiffies32, ca->last_rtt_reset_jiffies + BASE_RTT_RESET_INTERVAL)) {
 		ca->rtt_max = ca->max_rtt;
 		ca->max_rtt = ca->base_rtt;
 		ca->last_rtt_reset_jiffies = jiffies;
 	}
+
+	if (!rs->losses)
+		return;
+
+	tcp_elastic_pkts_acked(sk, rs);
 
 }
 

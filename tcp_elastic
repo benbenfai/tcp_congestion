@@ -70,6 +70,8 @@ static void tcp_elastic_init(struct sock *sk)
 	ca->max_rtt = 0;
 
 	ca->last_rtt_reset_jiffies = jiffies;
+	
+	ca->lt_rtt_cnt = 0;
 
 	rtt_reset(sk);
 	
@@ -247,6 +249,7 @@ static void tcp_elastic_update(struct sock *sk, const struct rate_sample *rs)
 	if (!before(rs->prior_delivered, ca->next_rtt_delivered)) {
 		ca->next_rtt_delivered = tp->delivered;
 		ca->lt_rtt_cnt++;
+		update_params(sk);
 	}
 
 	if (after(tcp_jiffies32, ca->last_rtt_reset_jiffies + BASE_RTT_RESET_INTERVAL)) {
@@ -258,7 +261,6 @@ static void tcp_elastic_update(struct sock *sk, const struct rate_sample *rs)
 	tcp_elastic_pkts_acked(sk, rs);
 
 	if (rs->is_app_limited) {
-		update_params(sk);
 		ca->lt_rtt_cnt = 0;
 		return;
 	}
@@ -267,13 +269,7 @@ static void tcp_elastic_update(struct sock *sk, const struct rate_sample *rs)
 		ca->lt_rtt_cnt = 0;
 		ca->last_base_rtt = (ca->last_base_rtt >> 1) + (ca->base_rtt >> 1);
 		ca->base_rtt = U32_MAX;
-		return;
 	}
-
-	if (!rs->losses)
-		return;
-
-	update_params(sk);
 }
 
 static void tcp_elastic_cong_control(struct sock *sk, const struct rate_sample *rs)

@@ -3,9 +3,9 @@ TCP Congestion
 Linux kernel version: 4.19
 
 TCP congestion
-mix tcp_illionis AIMD and some recovery handling from bbr
+mix some recovery handling from bbr
 
-use rate sample for detection network detection and fix the rtt never expired problem.
+use rate sample for detection network detection and handle the rtt expired.
 
 Elastic-TCP
 https://arxiv.org/pdf/1904.13105

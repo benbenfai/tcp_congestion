@@ -40,12 +40,12 @@ struct elastic {
 	u32 next_rtt_delivered; /* scb->tx.delivered at end of round */
 	u32	prior_cwnd;	/* prior cwnd upon entering loss recovery */
 
-	u32	lt_rtt_cnt:7;
+	u32	lt_rtt_cnt;
 
 	u16	cnt_rtt;	/* # of rtts measured within last rtt */
 
 	u32 last_rtt_reset_jiffies; /* For periodic base_rtt reset */
-	u32 prev_ca_state:3;     /* CA state on previous ACK */
+	u32 prev_ca_state;     /* CA state on previous ACK */
 } __attribute__((__packed__));
 
 static void rtt_reset(struct sock *sk)
@@ -63,20 +63,18 @@ static void tcp_elastic_init(struct sock *sk)
 
 	ca->rtt_max = tp->srtt_us;
 	ca->rtt_curr = ca->rtt_max;
-
-	ca->beta = BETA_BASE;
 	ca->base_rtt = U32_MAX;
 	ca->last_base_rtt = tp->srtt_us;
-	ca->max_rtt = 0;
-
-	ca->last_rtt_reset_jiffies = jiffies;
+	ca->max_rtt = tp->srtt_us;
+	ca->beta = BETA_BASE;
+	ca->next_rtt_delivered = tp->delivered;
+	ca->prior_cwnd = TCP_INIT_CWND;
 	
 	ca->lt_rtt_cnt = 0;
 
 	rtt_reset(sk);
-	
-	ca->prior_cwnd = TCP_INIT_CWND;
-	ca->next_rtt_delivered = tp->delivered;
+
+	ca->last_rtt_reset_jiffies = jiffies;
 	ca->prev_ca_state = TCP_CA_Open;
 }
 
@@ -189,8 +187,7 @@ static void tcp_elastic_pkts_acked(struct sock *sk, const struct rate_sample *rs
 	if (rtt_us > RTT_MAX)
 		rtt_us = RTT_MAX;
 
-	if(!rs->is_ack_delayed)
-		ca->rtt_curr = rtt_us;
+	ca->rtt_curr = rtt_us;
 
 	ca->base_rtt = min_not_zero(ca->base_rtt, rtt_us);
 
@@ -258,18 +255,13 @@ static void tcp_elastic_update(struct sock *sk, const struct rate_sample *rs)
 		ca->last_rtt_reset_jiffies = jiffies;
 	}
 
-	tcp_elastic_pkts_acked(sk, rs);
-
-	if (rs->is_app_limited) {
-		ca->lt_rtt_cnt = 0;
-		return;
-	}
-
-	if (ca->lt_rtt_cnt > 4 * bbr_lt_intvl_min_rtts) {
+	if (!rs->is_ack_delayed && ca->lt_rtt_cnt > 4 * bbr_lt_intvl_min_rtts) {
 		ca->lt_rtt_cnt = 0;
 		ca->last_base_rtt = (ca->last_base_rtt >> 1) + (ca->base_rtt >> 1);
 		ca->base_rtt = U32_MAX;
 	}
+
+	tcp_elastic_pkts_acked(sk, rs);
 }
 
 static void tcp_elastic_cong_control(struct sock *sk, const struct rate_sample *rs)
@@ -313,12 +305,23 @@ done:
 	tp->snd_cwnd = min(cwnd, tp->snd_cwnd_clamp);
 }
 
+static u32 tcp_elastic_undo_cwnd(struct sock *sk)
+{
+	const struct tcp_sock *tp = tcp_sk(sk);
+	struct elastic *ca = inet_csk_ca(sk);
+
+	ca->lt_rtt_cnt = 0;
+	
+	return max(tp->snd_cwnd, tp->prior_cwnd);
+}
+
+
 static struct tcp_congestion_ops tcp_elastic __read_mostly = {
 	.name		= "elastic",
 	.owner		= THIS_MODULE,
 	.init		= tcp_elastic_init,
 	.ssthresh	= tcp_elastic_ssthresh,
-	.undo_cwnd	= tcp_reno_undo_cwnd,
+	.undo_cwnd	= tcp_elastic_undo_cwnd,
 	.cong_avoid	= tcp_elastic_cong_avoid,
 	.cong_control   = tcp_elastic_cong_control,
 	.set_state	= tcp_elastic_set_state

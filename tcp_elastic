@@ -187,7 +187,8 @@ static void tcp_elastic_pkts_acked(struct sock *sk, const struct rate_sample *rs
 	if (rtt_us > RTT_MAX)
 		rtt_us = RTT_MAX;
 
-	ca->rtt_curr = rtt_us;
+	if (!rs->is_ack_delayed || ca->rtt_curr < rtt_us)
+		ca->rtt_curr = rtt_us;
 
 	ca->base_rtt = min_not_zero(ca->base_rtt, rtt_us);
 	ca->base_rtt = min(tp->srtt_us, ca->base_rtt);
@@ -262,8 +263,7 @@ static void tcp_elastic_update(struct sock *sk, const struct rate_sample *rs)
 		ca->base_rtt = U32_MAX;
 	}
 
-	if (!rs->is_ack_delayed)
-		tcp_elastic_pkts_acked(sk, rs);
+	tcp_elastic_pkts_acked(sk, rs);
 }
 
 static void tcp_elastic_cong_control(struct sock *sk, const struct rate_sample *rs)

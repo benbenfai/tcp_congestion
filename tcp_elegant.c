@@ -190,13 +190,13 @@ static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs
 	if (rtt_us > RTT_MAX)
 		rtt_us = RTT_MAX;
 
-	if (!is_delayed || rtt_us < ca->rtt_curr)
-		ca->rtt_curr = rtt_us;
-
 	if (acked > 1 && ca->delack < 5)
 		ca->delack++;
 	else if (is_delayed && ca->delack > 0)
 		ca->delack--;
+
+	if (!is_delayed || rtt_us < ca->rtt_curr || ca->rtt_curr == 0)
+		ca->rtt_curr = rtt_us;
 
 	ca->base_rtt = min_not_zero(ca->base_rtt, rtt_us);
 	ca->base_rtt = min(tp->srtt_us, ca->base_rtt);
@@ -352,5 +352,5 @@ module_init(elegant_register);
 module_exit(elegant_unregister);
 
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Elastic TCP");
+MODULE_DESCRIPTION("Elegant TCP");
 

@@ -45,7 +45,7 @@ struct elegant {
 	
 	u8 lt_rtt_cnt;
 	u8 prev_ca_state;     /* CA state on previous ACK */
-	u8  delack;
+	u8 delack;
 
 } __attribute__((__packed__));
 
@@ -76,6 +76,7 @@ static void tcp_elegant_init(struct sock *sk)
 
 	ca->lt_rtt_cnt = 0;
 	ca->prev_ca_state = TCP_CA_Open;
+	ca->delack = 0;
 }
 
 /* Calculate value scaled by beta */

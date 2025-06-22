@@ -199,7 +199,7 @@ static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs
 	if (!is_delayed || rtt_us < ca->rtt_curr || ca->rtt_curr == 0)
 		ca->rtt_curr = rtt_us;
 
-	ca->base_rtt = min_not_zero(ca->base_rtt, rtt_us);
+	ca->base_rtt = min(ca->base_rtt, rtt_us);
 	ca->base_rtt = min(tp->srtt_us, ca->base_rtt);
 
 	/* and max */
@@ -217,6 +217,8 @@ static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 
 	u32 wwf;
 
+	update_params(sk);
+
 	if (!tcp_is_cwnd_limited(sk))
 		return;
 
@@ -228,13 +230,7 @@ static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		u64 wwf64;
 		u32 d = max(ca->rtt_max, ca->max_rtt);
 		u32 c = min(ca->base_rtt, ca->last_base_rtt);
-		u32 m;
-
-		if (ca->rtt_curr > c) {
-			m = (ca->rtt_curr * 4 + c) / 5;
-		} else {
-			m = ca->rtt_curr;
-		}
+		u32 m = (ca->rtt_curr * 4 + c) / 5;
 
 		wwf64 = tp->snd_cwnd * ELEGANT_UNIT * ELEGANT_UNIT * d / m;
 		wwf64 = int_sqrt64(wwf64);
@@ -251,15 +247,8 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 	struct elegant *ca = inet_csk_ca(sk);
 
 	if (rs->delivered < 0 || rs->interval_us <= 0)
-		return; /* Not a valid observation */	
-
-	/* See if we've reached the next RTT */
-	if (!before(rs->prior_delivered, ca->next_rtt_delivered)) {
-		ca->next_rtt_delivered = tp->delivered;
-		ca->lt_rtt_cnt++;
-		update_params(sk);
-	}
-
+		return; /* Not a valid observation */
+	
 	if (after(tcp_jiffies32, ca->last_rtt_reset_jiffies + BASE_RTT_RESET_INTERVAL)) {
 		ca->rtt_max = ca->max_rtt;
 		ca->max_rtt = ca->base_rtt;
@@ -268,11 +257,21 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 
 	if (ca->lt_rtt_cnt > 4 * bbr_lt_intvl_min_rtts) {
 		ca->lt_rtt_cnt = 0;
-		ca->last_base_rtt = (ca->last_base_rtt >> 1) + (ca->base_rtt >> 1);
+		if (ca->last_base_rtt < ca->base_rtt) {
+			ca->last_base_rtt = (ca->last_base_rtt >> 1) + (ca->base_rtt >> 1);
+		} else {
+			ca->last_base_rtt = ca->base_rtt;
+		}
 		ca->base_rtt = U32_MAX;
 	}
 
-	tcp_elegant_pkts_acked(sk, rs);
+	/* See if we've reached the next RTT */
+	if (!before(rs->prior_delivered, ca->next_rtt_delivered)) {
+		ca->next_rtt_delivered = tp->delivered;
+		ca->lt_rtt_cnt++;
+		tcp_elegant_pkts_acked(sk, rs);
+	}
+
 }
 
 static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *rs)
@@ -328,14 +327,14 @@ static u32 tcp_elegant_undo_cwnd(struct sock *sk)
 
 
 static struct tcp_congestion_ops tcp_elegant __read_mostly = {
-	.name		= "elegant",
-	.owner		= THIS_MODULE,
-	.init		= tcp_elegant_init,
-	.ssthresh	= tcp_elegant_ssthresh,
-	.undo_cwnd	= tcp_elegant_undo_cwnd,
-	.cong_avoid	= tcp_elegant_cong_avoid,
+	.name			= "elegant",
+	.owner			= THIS_MODULE,
+	.init			= tcp_elegant_init,
+	.ssthresh		= tcp_elegant_ssthresh,
+	.undo_cwnd		= tcp_elegant_undo_cwnd,
+	.cong_avoid		= tcp_elegant_cong_avoid,
 	.cong_control   = tcp_elegant_cong_control,
-	.set_state	= tcp_elegant_set_state
+	.set_state		= tcp_elegant_set_state
 };
 
 static int __init elegant_register(void)

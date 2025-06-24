@@ -181,7 +181,8 @@ static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs
 
 	u32 rtt_us = rs->rtt_us;
 	u32 acked = rs->delivered - rs->prior_delivered;
-	bool is_delayed = rs->is_ack_delayed || (tp->sacked_out == 0 && acked == 1 && ca->delack);
+	bool delayed = acked == 1 && ca->delack;
+	bool is_delayed = rs->is_ack_delayed || (tp->sacked_out == 0 && delayed);
 
 	/* dup ack, no rtt sample */
 	if (rtt_us < 0)
@@ -193,10 +194,10 @@ static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs
 
 	if (acked > 1 && ca->delack < 5)
 		ca->delack++;
-	else if (is_delayed && ca->delack > 0)
+	else if (delayed)
 		ca->delack--;
 
-	if (!is_delayed || rtt_us < ca->rtt_curr || ca->rtt_curr == 0)
+	if ((!rs->acked_sacked && !is_delayed) || ca->rtt_curr == 0)
 		ca->rtt_curr = rtt_us;
 
 	ca->base_rtt = min(ca->base_rtt, rtt_us);
@@ -269,8 +270,9 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 	if (!before(rs->prior_delivered, ca->next_rtt_delivered)) {
 		ca->next_rtt_delivered = tp->delivered;
 		ca->lt_rtt_cnt++;
-		tcp_elegant_pkts_acked(sk, rs);
 	}
+	
+	tcp_elegant_pkts_acked(sk, rs);
 
 }
 

@@ -192,10 +192,12 @@ static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs
 	if (rtt_us > RTT_MAX)
 		rtt_us = RTT_MAX;
 
-	if (acked > 1 && ca->delack < 5)
-		ca->delack++;
-	else if (delayed)
-		ca->delack--;
+	if (tp->sacked_out == 0) {
+		if (acked > 1 && ca->delack < 5)
+			ca->delack++;
+		else if (delayed)
+			ca->delack--;
+	}
 
 	if ((!rs->acked_sacked && !is_delayed) || ca->rtt_curr > rtt_us || ca->rtt_curr == 0)
 		ca->rtt_curr = rtt_us;

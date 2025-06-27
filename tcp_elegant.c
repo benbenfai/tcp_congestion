@@ -171,6 +171,7 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 	if (new_state == TCP_CA_Loss) {
 		ca->prev_ca_state = TCP_CA_Loss;
 		tcp_elegant_reset(sk);
+		ca->delack = 0;
 	}
 }
 
@@ -273,7 +274,7 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 		ca->next_rtt_delivered = tp->delivered;
 		ca->lt_rtt_cnt++;
 	}
-	
+
 	tcp_elegant_pkts_acked(sk, rs);
 
 }
@@ -328,7 +329,6 @@ static u32 tcp_elegant_undo_cwnd(struct sock *sk)
 	
 	return max(tp->snd_cwnd, tp->prior_cwnd);
 }
-
 
 static struct tcp_congestion_ops tcp_elegant __read_mostly = {
 	.name			= "elegant",

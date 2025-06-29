@@ -110,13 +110,16 @@ static inline u32 avg_delay(const struct elegant *ca)
 	return t - ca->base_rtt;
 }
 
-static u32 beta(u32 da, u32 dm)
+static u32 beta(const struct elegant *ca, u32 da, u32 dm)
 {
 	u32 d2, d3;
 
 	d2 = dm / 10;
 	if (da <= d2)
 		return BETA_MIN;
+
+	if (ca->rtt_max > ca->max_rtt && ca->last_base_rtt > ca->base_rtt)
+		return max((ca->beta * 3) >> 2, BETA_MIN);
 
 	d3 = (8 * dm) / 10;
 	if (da >= d3 || d3 <= d2)
@@ -150,7 +153,7 @@ static void update_params(struct sock *sk)
 		u32 dm = max_delay(ca);
 		u32 da = avg_delay(ca);
 
-		ca->beta = beta(da, dm);
+		ca->beta = beta(ca, da, dm);
 	}
 
 	rtt_reset(sk);
@@ -221,8 +224,6 @@ static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 
 	u32 wwf;
 
-	update_params(sk);
-
 	if (!tcp_is_cwnd_limited(sk))
 		return;
 
@@ -260,6 +261,7 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 	}
 
 	if (ca->lt_rtt_cnt > 4 * bbr_lt_intvl_min_rtts) {
+		update_params(sk);
 		ca->lt_rtt_cnt = 0;
 		if (ca->last_base_rtt < ca->base_rtt) {
 			ca->last_base_rtt = (ca->last_base_rtt >> 1) + (ca->base_rtt >> 1);

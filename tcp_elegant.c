@@ -118,9 +118,6 @@ static u32 beta(const struct elegant *ca, u32 da, u32 dm)
 	if (da <= d2)
 		return BETA_MIN;
 
-	if (ca->rtt_max > ca->max_rtt && ca->last_base_rtt > ca->base_rtt)
-		return max((ca->beta * 3) >> 2, BETA_MIN);
-
 	d3 = (8 * dm) / 10;
 	if (da >= d3 || d3 <= d2)
 		return BETA_MAX;
@@ -261,7 +258,9 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 	}
 
 	if (ca->lt_rtt_cnt > 4 * bbr_lt_intvl_min_rtts) {
-		update_params(sk);
+		if (!rs->app_limited) {
+			update_params(sk);
+		}
 		ca->lt_rtt_cnt = 0;
 		if (ca->last_base_rtt < ca->base_rtt) {
 			ca->last_base_rtt = (ca->last_base_rtt >> 1) + (ca->base_rtt >> 1);

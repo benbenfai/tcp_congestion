@@ -258,7 +258,7 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 	}
 
 	if (ca->lt_rtt_cnt > 4 * bbr_lt_intvl_min_rtts) {
-		if (!rs->app_limited) {
+		if (!rs->is_app_limited) {
 			update_params(sk);
 		}
 		ca->lt_rtt_cnt = 0;
@@ -338,7 +338,7 @@ static struct tcp_congestion_ops tcp_elegant __read_mostly = {
 	.ssthresh		= tcp_elegant_ssthresh,
 	.undo_cwnd		= tcp_elegant_undo_cwnd,
 	.cong_avoid		= tcp_elegant_cong_avoid,
-	.cong_control   = tcp_elegant_cong_control,
+	.cong_control	= tcp_elegant_cong_control,
 	.set_state		= tcp_elegant_set_state
 };
 

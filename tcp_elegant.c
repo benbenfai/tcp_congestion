@@ -6,7 +6,8 @@
 #include <linux/math64.h>
 
 #define ELEGANT_SCALE 6
-#define ELEGANT_UNIT (1 << ELEGANT_SCALE)
+#define ELEGANT_UNIT (1 << ELEGANT_SCALE)          // 64
+#define E_UNIT_SQ_SHIFT (2 * ELEGANT_SCALE)        // 12
 
 #define ALPHA_SHIFT	7
 #define ALPHA_SCALE	(1u<<ALPHA_SHIFT)
@@ -265,10 +266,10 @@ static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
             u64 inv_m   = mean ? ((1ULL << INV_M_SHIFT) / mean) : 0;
 
             u32 peak = max(ca->rtt_max, ca->max_rtt);
-            u64 raw  = (u64)tp->snd_cwnd * ELEGANT_UNIT * ELEGANT_UNIT * peak;
-            u32 root = fast_sqrt((u32)((raw * inv_m) >> INV_M_SHIFT));
+            u64 raw  = ((u64)tp->snd_cwnd << E_UNIT_SQ_SHIFT) * peak;
+            u32 root = fast_sqrt((u32)(((raw*inv_m)>>INV_M_SHIFT)>>2*ELEGANT_SCALE));
 
-            ca->cached_wwf = root >> ELEGANT_SCALE;
+            ca->cached_wwf = root;
             ca->wwf_valid  = true;
         }
 

@@ -29,6 +29,10 @@ static int win_thresh __read_mostly = 20; /* Increased threshold for adaptive al
 module_param(win_thresh, int, 0);
 MODULE_PARM_DESC(win_thresh, "Window threshold for starting adaptive sizing");
 
+static int rtt0 = 25;
+module_param(rtt0, int, 0644);
+MODULE_PARM_DESC(rtt0, "reference rout trip time (ms)");
+
 struct elegant {
 	u64	sum_rtt;	/* sum of rtt's measured within last rtt */
 
@@ -221,12 +225,18 @@ static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs
 	ca->sum_rtt += rtt_us;
 }
 
+static inline u32 hybla_factor(const struct tcp_sock *tp, const struct elegant *ca)
+{
+    u32 cur = max(ca->rtt_curr, 1U);
+    u32 p   = cur / min(tp->srtt_us, 25000U);
+    return clamp(p, 1U, 4U);
+}
+
 static u32 fast_sqrt(u32 x)
 {
+	int shift = fls(x) - 1;
+	u32 res = 1U << (shift >> 1);
     if (x == 0) return 0;
-    int shift = fls(x) - 1;
-    u32 res = 1U << (shift >> 1);
-
     res = (res + x / res) >> 1;
     res = (res + x / res) >> 1;
     return res;
@@ -243,9 +253,10 @@ static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		return;
 
 	if (tcp_in_slow_start(tp)) {
-		wwf = tcp_slow_start(tp, acked);
-		if (!wwf)
-			return;
+		u32 p    = hybla_factor(tp, ca);
+		u32 incr = acked * p;
+		tp->snd_cwnd += incr;
+		return;
 	} else {
 		/* Compute WWF once per RTT boundary */
 		if (!ca->wwf_valid) {

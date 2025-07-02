@@ -71,11 +71,11 @@ static void tcp_elegant_init(struct sock *sk)
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
-	ca->rtt_max = tp->srtt_us;
+	ca->rtt_max = tp->srtt_us >> 3;
 	ca->rtt_curr = ca->rtt_max;
 	ca->base_rtt = U32_MAX;
-	ca->last_base_rtt = tp->srtt_us;
-	ca->max_rtt = tp->srtt_us;
+	ca->last_base_rtt = tp->srtt_us >> 3;
+	ca->max_rtt = tp->srtt_us >> 3;
 	ca->beta = BETA_BASE;
 	ca->next_rtt_delivered = tp->delivered;
 	ca->prior_cwnd = TCP_INIT_CWND;
@@ -216,7 +216,7 @@ static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs
 		ca->rtt_curr = rtt_us;
 
 	ca->base_rtt = min(ca->base_rtt, rtt_us);
-	ca->base_rtt = min(tp->srtt_us, ca->base_rtt);
+	ca->base_rtt = min(tp->srtt_us >> 3, ca->base_rtt);
 
 	/* and max */
 	if (ca->max_rtt < rtt_us)
@@ -231,16 +231,6 @@ static inline u32 hybla_factor(const struct tcp_sock *tp, const struct elegant *
     u32 cur = max(ca->rtt_curr, 1U);
     u32 p   = cur / min(tp->srtt_us, 25000U);
     return clamp(p, 1U, 4U);
-}
-
-static u32 fast_sqrt(u32 x)
-{
-	int shift = fls(x) - 1;
-	u32 res = 1U << (shift >> 1);
-    if (x == 0) return 0;
-    res = (res + x / res) >> 1;
-    res = (res + x / res) >> 1;
-    return res;
 }
 
 static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
@@ -261,16 +251,13 @@ static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	} else {
 		/* Compute WWF once per RTT boundary */
 		if (!ca->wwf_valid) {
-            u32 min_base = min(ca->base_rtt, ca->last_base_rtt);
-            u32 mean    = (4U * ca->rtt_curr + min_base) / 5;
-            u64 inv_m   = mean ? ((1ULL << INV_M_SHIFT) / mean) : 0;
-
-            u32 peak = max(ca->rtt_max, ca->max_rtt);
-            u64 raw  = ((u64)tp->snd_cwnd << E_UNIT_SQ_SHIFT) * peak;
-            u32 root = fast_sqrt((u32)(((raw*inv_m)>>INV_M_SHIFT)>>2*ELEGANT_SCALE));
-
-            ca->cached_wwf = root;
-            ca->wwf_valid  = true;
+			u32 mean = (4U * ca->rtt_curr + min(ca->base_rtt, ca->last_base_rtt)) / 5;
+			u64 inv_m = mean ? ((1ULL << INV_M_SHIFT) / mean) : 0;
+			u64 raw = ((u64)tp->snd_cwnd << E_UNIT_SQ_SHIFT) * max(ca->rtt_max, ca->max_rtt);
+			u64 root64 = int_sqrt64((raw * inv_m) >> INV_M_SHIFT);
+			ca->cached_wwf = (u32)(root64 >> ELEGANT_SCALE);
+			
+			ca->wwf_valid  = true;
         }
 
         wwf = max(ca->cached_wwf, acked);
@@ -289,7 +276,7 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 	
 	if (after(tcp_jiffies32, ca->last_rtt_reset_jiffies + BASE_RTT_RESET_INTERVAL)) {
 		ca->rtt_max = ca->max_rtt;
-		ca->max_rtt = ca->base_rtt;
+		ca->max_rtt = tp->srtt_us >> 3;
 		ca->last_rtt_reset_jiffies = jiffies;
 	}
 

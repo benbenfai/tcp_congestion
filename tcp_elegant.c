@@ -372,7 +372,7 @@ static u32 tcp_elegant_undo_cwnd(struct sock *sk)
 
 	ca->lt_rtt_cnt = 0;
 	
-	return max(tp->snd_cwnd, tp->prior_cwnd);
+	return max(tp->snd_cwnd, ca->prior_cwnd);
 }
 
 static struct tcp_congestion_ops tcp_elegant __read_mostly = {

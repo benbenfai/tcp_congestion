@@ -233,6 +233,28 @@ static inline u32 hybla_factor(const struct tcp_sock *tp, const struct elegant *
     return clamp(p, 1U, 4U);
 }
 
+static u32 isqrt_u64(u64 x)
+{
+    u64 r, r_next;
+
+    if (x == 0 || x == 1)
+        return (u32)x;
+
+    /* initial guess: half of x, or 1<<32 whichever is smaller */
+    r = x >> 1;
+    if (r == 0)
+        r = 1ULL << 32;
+
+    /* iterate: r = (r + x/r) / 2 until stable */
+    while (1) {
+        r_next = (r + x / r) >> 1;
+        if (r_next >= r)
+            break;
+        r = r_next;
+    }
+    return (u32)r;
+}
+
 static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -254,7 +276,7 @@ static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 			u32 mean = (4U * ca->rtt_curr + min(ca->base_rtt, ca->last_base_rtt)) / 5;
 			u64 inv_m = mean ? ((1ULL << INV_M_SHIFT) / mean) : 0;
 			u64 raw = ((u64)tp->snd_cwnd << E_UNIT_SQ_SHIFT) * max(ca->rtt_max, ca->max_rtt);
-			u64 root64 = int_sqrt64((raw * inv_m) >> INV_M_SHIFT);
+			u64 root64 = isqrt_u64((raw * inv_m) >> INV_M_SHIFT);
 			ca->cached_wwf = (u32)(root64 >> ELEGANT_SCALE);
 			
 			ca->wwf_valid  = true;

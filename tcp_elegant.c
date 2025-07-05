@@ -4,6 +4,8 @@
 #include <linux/skbuff.h>
 #include <asm/div64.h>
 #include <linux/math64.h>
+#include <linux/types.h>
+#include <linux/kernel.h>
 
 #define ELEGANT_SCALE 6
 #define ELEGANT_UNIT (1 << ELEGANT_SCALE)          // 64
@@ -42,17 +44,17 @@ struct elegant {
 	u32	base_rtt;	/* min of all rtt in usec */
 	u32	last_base_rtt;
 	u32	max_rtt;	/* max rtt of the current round for alpha/beta */
+	u32 last_rtt_reset_jiffies; /* For periodic base_rtt reset */
+
 	u32	beta;		/* Muliplicative decrease */
 	u32 next_rtt_delivered; /* scb->tx.delivered at end of round */
 	u32	prior_cwnd;	/* prior cwnd upon entering loss recovery */
-	u32 last_rtt_reset_jiffies; /* For periodic base_rtt reset */
 	u32 cached_wwf;
 
 	u16	cnt_rtt;	/* # of rtts measured within last rtt */
-	
-	u8 lt_rtt_cnt;
+	u8 lt_rtt_cnt:4,
+	   delack:4;
 	u8 prev_ca_state;     /* CA state on previous ACK */
-	u8 delack;
 
 	bool wwf_valid;
 
@@ -73,20 +75,21 @@ static void tcp_elegant_init(struct sock *sk)
 
 	ca->rtt_max = tp->srtt_us >> 3;
 	ca->rtt_curr = ca->rtt_max;
-	ca->base_rtt = U32_MAX;
-	ca->last_base_rtt = tp->srtt_us >> 3;
-	ca->max_rtt = tp->srtt_us >> 3;
+	ca->base_rtt = ca->rtt_curr;
+	ca->last_base_rtt = ca->base_rtt;
+	ca->max_rtt = ca->last_base_rtt;
+	ca->last_rtt_reset_jiffies = jiffies;
+
 	ca->beta = BETA_BASE;
 	ca->next_rtt_delivered = tp->delivered;
 	ca->prior_cwnd = TCP_INIT_CWND;
-	ca->last_rtt_reset_jiffies = jiffies;
 	ca->cached_wwf = 0;
 
 	rtt_reset(sk);
 
 	ca->lt_rtt_cnt = 0;
-	ca->prev_ca_state = TCP_CA_Open;
 	ca->delack = 0;
+	ca->prev_ca_state = TCP_CA_Open;
 
 	ca->wwf_valid = false;
 }
@@ -228,31 +231,62 @@ static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs
 
 static inline u32 hybla_factor(const struct tcp_sock *tp, const struct elegant *ca)
 {
-    u32 cur = max(ca->rtt_curr, 1U);
-    u32 p   = cur / min(tp->srtt_us, 25000U);
-    return clamp(p, 1U, 4U);
+    /* Clamp srtt_us to floor of 25ms to avoid tiny divisors */
+    u32 srtt_clamped = tp->srtt_us < 25000U ? 25000U : tp->srtt_us;
+
+    /* Avoid div-by-zero and micro-branch cost */
+    u32 rtt = ca->rtt_curr ? ca->rtt_curr : 1U;
+
+    /* Fast-path estimate using fixed-point scale instead of division */
+    u32 ratio = (rtt << 8) / srtt_clamped; // Q8 fixed-point
+    u32 p = ratio >> 8;
+
+    /* Clamp result to [1, 4] */
+    return p < 1 ? 1 : (p > 4 ? 4 : p);
 }
 
 static u32 isqrt_u64(u64 x)
 {
-    u64 r, r_next;
-
     if (x == 0 || x == 1)
         return (u32)x;
 
-    /* initial guess: half of x, or 1<<32 whichever is smaller */
-    r = x >> 1;
-    if (r == 0)
-        r = 1ULL << 32;
+    /* Get highest set bit: similar to fls64 */
+    int msb = 63 - __builtin_clzll(x);
+    int shift = msb >> 1;
 
-    /* iterate: r = (r + x/r) / 2 until stable */
+    /* Initial guess: 1 << shift */
+    u64 r = 1ULL << shift;
+    u64 r_next;
+
     while (1) {
-        r_next = (r + x / r) >> 1;
+        u64 div = x / r;
+        r_next = (r + div) >> 1;
         if (r_next >= r)
             break;
         r = r_next;
     }
     return (u32)r;
+}
+
+static inline u32 calc_wwf(const struct tcp *tp, const struct ca *ca)
+{
+    return (u32)(
+        /* final right‐shift after sqrt */
+        isqrt_u64(
+            /* numerator: ((cwnd << 12) * d * (1+β)²) */
+            (
+                ((u64)tp->snd_cwnd << E_UNIT_SQ_SHIFT)
+              * (u64)(ca->rtt_max < ca->max_rtt ? ca->max_rtt : ca->rtt_max)
+              * (u64)(BETA_SCALE + ca->beta)
+              * (u64)(BETA_SCALE + ca->beta)
+            )
+            /* one 64-bit divide by: mean_scaled = ((13·rtt+3·c)>>4)·64² */
+            / (
+                ((ca->rtt_curr * 13U + (ca->base_rtt < ca->last_base_rtt ? ca->base_rtt : ca->last_base_rtt) * 3U) >> 4)
+              << (2 * BETA_SHIFT)
+            )
+        )
+    ) >> ELEGANT_SCALE;
 }
 
 static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
@@ -273,11 +307,8 @@ static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	} else {
 		/* Compute WWF once per RTT boundary */
 		if (!ca->wwf_valid) {
-			u32 mean = (4U * ca->rtt_curr + min(ca->base_rtt, ca->last_base_rtt)) / 5;
-			u64 inv_m = mean ? ((1ULL << INV_M_SHIFT) / mean) : 0;
-			u64 raw = ((u64)tp->snd_cwnd << E_UNIT_SQ_SHIFT) * max(ca->rtt_max, ca->max_rtt);
-			u64 root64 = isqrt_u64((raw * inv_m) >> INV_M_SHIFT);
-			ca->cached_wwf = (u32)(root64 >> ELEGANT_SCALE);
+
+			ca->cached_wwf = calc_wwf(tp, ca);
 			
 			ca->wwf_valid  = true;
         }

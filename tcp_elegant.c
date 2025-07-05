@@ -270,23 +270,26 @@ static u32 isqrt_u64(u64 x)
 
 static inline u32 calc_wwf(const struct tcp_sock *tp, const struct elegant *ca)
 {
-    return (u32)(
-        /* final right‐shift after sqrt */
-        isqrt_u64(
-            /* numerator: ((cwnd << 12) * d * (1+β)²) */
-            (
-                ((u64)tp->snd_cwnd << E_UNIT_SQ_SHIFT)
-              * (u64)(ca->rtt_max < ca->max_rtt ? ca->max_rtt : ca->rtt_max)
-              * (u64)(BETA_SCALE + ca->beta)
-              * (u64)(BETA_SCALE + ca->beta)
-            )
-            /* one 64-bit divide by: mean_scaled = ((13·rtt+3·c)>>4)·64² */
-            / (
-                ((ca->rtt_curr * 13U + (ca->base_rtt < ca->last_base_rtt ? ca->base_rtt : ca->last_base_rtt) * 3U) >> 4)
-              << (2 * BETA_SHIFT)
-            )
-        )
-    ) >> ELEGANT_SCALE;
+    u32 inv_beta = BETA_MIN + BETA_MAX - ca->beta;
+
+    u32 d = ca->rtt_max < ca->max_rtt
+            ? ca->max_rtt
+            : ca->rtt_max;
+
+    u32 c = ca->base_rtt < ca->last_base_rtt
+            ? ca->base_rtt
+            : ca->last_base_rtt;
+
+    u32 m = (13U * ca->rtt_curr + 3U * c) >> 4;
+
+    u64 one_plus_b = (u64)(BETA_SCALE + inv_beta) << ELEGANT_SCALE;
+
+    u64 raw = (u64)tp->snd_cwnd << E_UNIT_SQ_SHIFT;
+        raw *= d * one_plus_b * one_plus_b;
+
+    u64 shift = (u64)m << (2 * BETA_SHIFT + 2 * ELEGANT_SCALE);
+
+    return (u32)isqrt_u64(raw / shift);
 }
 
 static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)

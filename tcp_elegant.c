@@ -268,7 +268,7 @@ static u32 isqrt_u64(u64 x)
     return (u32)r;
 }
 
-static inline u32 calc_wwf(const struct tcp *tp, const struct ca *ca)
+static inline u32 calc_wwf(const struct tcp_sock *tp, const struct elegant *ca)
 {
     return (u32)(
         /* final right‐shift after sqrt */

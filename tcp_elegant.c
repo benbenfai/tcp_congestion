@@ -215,8 +215,11 @@ static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs
 			ca->delack--;
 	}
 
-	if ((!rs->acked_sacked && !is_delayed) || ca->rtt_curr > rtt_us || ca->rtt_curr == 0)
+	bool first_sample = (ca->cnt_rtt == 0);
+	if (first_sample || (!rs->acked_sacked && !is_delayed) || ca->rtt_curr > rtt_us)
 		ca->rtt_curr = rtt_us;
+		++ca->cnt_rtt;
+		ca->sum_rtt += rtt_us;
 
 	ca->base_rtt = min(ca->base_rtt, rtt_us);
 	ca->base_rtt = min(tp->srtt_us >> 3, ca->base_rtt);
@@ -224,9 +227,6 @@ static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs
 	/* and max */
 	if (ca->max_rtt < rtt_us)
 		ca->max_rtt = rtt_us;
-
-	++ca->cnt_rtt;
-	ca->sum_rtt += rtt_us;
 }
 
 static inline u32 hybla_factor(const struct tcp_sock *tp, const struct elegant *ca)
@@ -285,9 +285,9 @@ static inline u32 calc_wwf(const struct tcp_sock *tp, const struct elegant *ca)
     u64 one_plus_b = (u64)(BETA_SCALE + inv_beta) << ELEGANT_SCALE;
 
     u64 raw = (u64)tp->snd_cwnd << E_UNIT_SQ_SHIFT;
-        raw *= d * one_plus_b * one_plus_b;
+        raw *= d * one_plus_b;
 
-    u64 shift = (u64)m << (2 * BETA_SHIFT + 2 * ELEGANT_SCALE);
+    u64 shift = (u64)m << (BETA_SHIFT + 2 * ELEGANT_SCALE);
 
     return (u32)isqrt_u64(raw / shift);
 }

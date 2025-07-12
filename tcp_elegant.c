@@ -190,45 +190,6 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 	}
 }
 
-static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs)
-{
-	const struct tcp_sock *tp = tcp_sk(sk);
-	struct elegant *ca = inet_csk_ca(sk);
-
-	u32 rtt_us = rs->rtt_us;
-	u32 acked = rs->delivered - rs->prior_delivered;
-	bool delayed = acked == 1 && ca->delack;
-	bool is_delayed = rs->is_ack_delayed || (tp->sacked_out == 0 && delayed);
-
-	/* dup ack, no rtt sample */
-	if (rtt_us < 0)
-		return;
-
-	/* ignore bogus values, this prevents wraparound in alpha math */
-	if (rtt_us > RTT_MAX)
-		rtt_us = RTT_MAX;
-
-	if (tp->sacked_out == 0) {
-		if (acked > 1 && ca->delack < 5)
-			ca->delack++;
-		else if (delayed)
-			ca->delack--;
-	}
-
-	bool first_sample = (ca->cnt_rtt == 0);
-	if (first_sample || (!rs->acked_sacked && !is_delayed) || ca->rtt_curr > rtt_us)
-		ca->rtt_curr = rtt_us;
-		++ca->cnt_rtt;
-		ca->sum_rtt += rtt_us;
-
-	ca->base_rtt = min(ca->base_rtt, rtt_us);
-	ca->base_rtt = min(tp->srtt_us >> 3, ca->base_rtt);
-
-	/* and max */
-	if (ca->max_rtt < rtt_us)
-		ca->max_rtt = rtt_us;
-}
-
 static inline u32 hybla_factor(const struct tcp_sock *tp, const struct elegant *ca)
 {
     /* Clamp srtt_us to floor of 25ms to avoid tiny divisors */
@@ -322,6 +283,44 @@ static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 }
 
+static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs)
+{
+	const struct tcp_sock *tp = tcp_sk(sk);
+	struct elegant *ca = inet_csk_ca(sk);
+
+	u32 rtt_us = rs->rtt_us;
+	u32 acked = rs->delivered - rs->prior_delivered;
+	bool delayed = acked == 1 && ca->delack;
+	bool is_delayed = rs->is_ack_delayed || (tp->sacked_out == 0 && delayed);
+
+	/* dup ack, no rtt sample */
+	if (rtt_us < 0)
+		return;
+
+	if (rtt_us > RTT_MAX)
+		rtt_us = RTT_MAX;
+
+	if (tp->sacked_out == 0) {
+		if (acked > 1 && ca->delack < 5)
+			ca->delack++;
+		else if (delayed)
+			ca->delack--;
+	}
+
+	bool first_sample = (ca->cnt_rtt == 0);
+	if (first_sample || (!rs->acked_sacked && !is_delayed))
+		ca->rtt_curr = rtt_us;
+		++ca->cnt_rtt;
+		ca->sum_rtt += rtt_us;
+
+	ca->base_rtt = min(ca->base_rtt, rtt_us);
+	ca->base_rtt = min(tp->srtt_us >> 3, ca->base_rtt);
+
+	/* and max */
+	if (ca->max_rtt < rtt_us)
+		ca->max_rtt = rtt_us;
+}
+
 static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
@@ -371,15 +370,11 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 	if (!rs->acked_sacked)
 		goto done;  /* no packet fully ACKed; just apply caps */
 
-	if (state == TCP_CA_Open) /* Let cong_control adjustments run even if hybla_en is true */
+	if (state == TCP_CA_Open)
 		goto done;
 
 	ca->prev_ca_state = state;
-	
-	/* An ACK for P pkts should release at most 2*P packets. We do this
-	 * in two steps. First, here we deduct the number of lost packets.
-	 * Then, in bbr_set_cwnd() we slow start up toward the target cwnd.
-	 */
+
 	if (rs->losses > 0)
 		cwnd = max_t(s32, cwnd - rs->losses, 1);
 
@@ -389,7 +384,6 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 		cwnd = max(cwnd, tcp_packets_in_flight(tp) + rs->acked_sacked);
 		goto done;
 	} else if (prev_state >= TCP_CA_Recovery && state < TCP_CA_Recovery) {
-		/* Exiting loss recovery; restore cwnd saved before recovery. */
 		cwnd = max(cwnd, ca->prior_cwnd);
 	}
 

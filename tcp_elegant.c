@@ -40,7 +40,7 @@ struct elegant {
 	u64	sum_rtt;	/* sum of rtt's measured within last rtt */
 
 	u32	rtt_max;        /* Max RTT used for wwf, decays */
-	u32	rtt_curr;
+	u32	rtt_curr;		/*current rtt*/
 	u32	base_rtt;	/* min of all rtt in usec */
 	u32	last_base_rtt;
 	u32	max_rtt;	/* max rtt of the current round for alpha/beta */
@@ -208,9 +208,6 @@ static inline u32 hybla_factor(const struct tcp_sock *tp, const struct elegant *
 
 static u32 isqrt_u64(u64 x)
 {
-    if (x == 0 || x == 1)
-        return (u32)x;
-
     /* Get highest set bit: similar to fls64 */
     int msb = 63 - __builtin_clzll(x);
     int shift = msb >> 1;
@@ -218,6 +215,9 @@ static u32 isqrt_u64(u64 x)
     /* Initial guess: 1 << shift */
     u64 r = 1ULL << shift;
     u64 r_next;
+	
+	if (x == 0 || x == 1)
+        return (u32)x;
 
     while (1) {
         u64 div = x / r;
@@ -244,11 +244,11 @@ static inline u32 calc_wwf(const struct tcp_sock *tp, const struct elegant *ca)
     u32 m = (13U * ca->rtt_curr + 3U * c) >> 4;
 
     u64 one_plus_b = (u64)(BETA_SCALE + inv_beta) << ELEGANT_SCALE;
+	
+	u64 shift = (u64)m << (BETA_SHIFT + 2 * ELEGANT_SCALE);
 
     u64 raw = (u64)tp->snd_cwnd << E_UNIT_SQ_SHIFT;
         raw *= d * one_plus_b;
-
-    u64 shift = (u64)m << (BETA_SHIFT + 2 * ELEGANT_SCALE);
 
     return (u32)isqrt_u64(raw / shift);
 }
@@ -290,6 +290,7 @@ static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs
 
 	u32 rtt_us = rs->rtt_us;
 	u32 acked = rs->delivered - rs->prior_delivered;
+	bool first_sample = (ca->cnt_rtt == 0);
 	bool delayed = acked == 1 && ca->delack;
 	bool is_delayed = rs->is_ack_delayed || (tp->sacked_out == 0 && delayed);
 
@@ -307,7 +308,6 @@ static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs
 			ca->delack--;
 	}
 
-	bool first_sample = (ca->cnt_rtt == 0);
 	if (first_sample || (!rs->acked_sacked && !is_delayed))
 		ca->rtt_curr = rtt_us;
 		++ca->cnt_rtt;
@@ -382,6 +382,7 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 		ca->next_rtt_delivered = tp->delivered;  /* start round now */
 		/* Cut unused cwnd from app behavior, TSQ, or TSO deferral: */
 		cwnd = max(cwnd, tcp_packets_in_flight(tp) + rs->acked_sacked);
+		ca->wwf_valid = false;
 		goto done;
 	} else if (prev_state >= TCP_CA_Recovery && state < TCP_CA_Recovery) {
 		cwnd = max(cwnd, ca->prior_cwnd);

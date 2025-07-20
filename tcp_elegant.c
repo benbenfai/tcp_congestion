@@ -10,6 +10,7 @@
 #define ELEGANT_SCALE 6
 #define ELEGANT_UNIT (1 << ELEGANT_SCALE)          // 64
 #define E_UNIT_SQ_SHIFT (2 * ELEGANT_SCALE)        // 12
+#define E_UNIT_SQ (1ULL << E_UNIT_SQ_SHIFT)     // 4096
 
 #define ALPHA_SHIFT	7
 #define ALPHA_SCALE	(1u<<ALPHA_SHIFT)
@@ -21,6 +22,7 @@
 #define BETA_MIN	(BETA_SCALE/8)		/* 0.125 */
 #define BETA_MAX	(BETA_SCALE/2)		/* 0.5 */
 #define BETA_BASE	BETA_MAX
+#define BETA_SUM   (BETA_SCALE + BETA_MIN + BETA_MAX)
 
 #define BASE_RTT_RESET_INTERVAL (10 * HZ) /* 10 seconds for base_rtt reset */
 #define INV_M_SHIFT 32
@@ -239,24 +241,23 @@ static inline u64 fast_isqrt(u64 x)
     /* Initial guess: 1 << (floor(log2(x)) / 2) */
     r = 1ULL << ((63 - __builtin_clzll(x)) >> 1);
 
-    /* two Newton iteration */
+    /* one Newton iteration */
     r = (r + x / r) >> 1;
-	r = (r + x/r) >> 1;
+	//r = (r + x / r) >> 1;
 
     return r;
 }
 
 static inline u32 calc_wwf(const struct tcp_sock *tp, const struct elegant *ca)
 {
-	u32 inv_beta = BETA_MIN + BETA_MAX - ca->beta;
+	u32 inv_beta = BETA_SUM - ca->beta; 
     u32 d        = max(ca->rtt_max,    ca->max_rtt);
     u32 c        = min(ca->base_rtt,   ca->last_base_rtt);
     u32 m        = (13U * ca->rtt_curr + 3U * c) >> 4;
-    u64 scale    = (u64)(BETA_SCALE + inv_beta);
 
-    u64 wwf = div64_u64((u64)tp->snd_cwnd * ELEGANT_UNIT * ELEGANT_UNIT * d * scale, m);
+	u64 numer = (u64)tp->snd_cwnd * d * inv_beta << E_UNIT_SQ_SHIFT;
 
-    return (u32)fast_isqrt(wwf);
+    return (u32)fast_isqrt(div_u64(numer, m));
 }
 
 static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)

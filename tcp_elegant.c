@@ -257,7 +257,7 @@ static inline u32 calc_wwf(const struct tcp_sock *tp, const struct elegant *ca)
 
 	u64 numer = (u64)tp->snd_cwnd * d * inv_beta << E_UNIT_SQ_SHIFT;
 
-    return (u32)fast_isqrt(div_u64(numer, m));
+    return (u32)fast_isqrt(div_u64(numer, m)) >> ELEGANT_SCALE;
 }
 
 static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)

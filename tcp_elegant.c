@@ -255,9 +255,10 @@ static inline u32 calc_wwf(const struct tcp_sock *tp, const struct elegant *ca)
     u32 c        = min(ca->base_rtt,   ca->last_base_rtt);
     u32 m        = (13U * ca->rtt_curr + 3U * c) >> 4;
 
-	u64 numer = (u64)tp->snd_cwnd * d * inv_beta << E_UNIT_SQ_SHIFT;
+	u64 numer	 = (u64)tp->snd_cwnd * d << E_UNIT_SQ_SHIFT;
+	u64 wwf	 	 = (fast_isqrt(div_u64(numer, m)) >> ELEGANT_SCALE) * inv_beta + (BETA_SCALE>>1);
 
-    return (u32)fast_isqrt(div_u64(numer, m)) >> ELEGANT_SCALE;
+    return (u32)(wwf >> BETA_SHIFT);
 }
 
 static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)

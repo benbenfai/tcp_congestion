@@ -54,8 +54,7 @@ struct elegant {
 	u32 cached_wwf;
 
 	u16	cnt_rtt;	/* # of rtts measured within last rtt */
-	u8 lt_rtt_cnt:4,
-	   delack:4;
+	u8 lt_rtt_cnt;
 	u8 prev_ca_state;     /* CA state on previous ACK */
 
 	bool wwf_valid;
@@ -90,7 +89,6 @@ static void tcp_elegant_init(struct sock *sk)
 	rtt_reset(sk);
 
 	ca->lt_rtt_cnt = 0;
-	ca->delack = 0;
 	ca->prev_ca_state = TCP_CA_Open;
 
 	ca->wwf_valid = false;
@@ -188,7 +186,6 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 	if (new_state == TCP_CA_Loss) {
 		ca->prev_ca_state = TCP_CA_Loss;
 		tcp_elegant_reset(sk);
-		ca->delack = 0;
 	}
 }
 
@@ -299,8 +296,7 @@ static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs
 	u32 rtt_us = rs->rtt_us;
 	u32 acked = rs->delivered - rs->prior_delivered;
 	bool first_sample = (ca->cnt_rtt == 0);
-	bool delayed = acked == 1 && ca->delack;
-	bool is_delayed = rs->is_ack_delayed || (tp->sacked_out == 0 && delayed);
+	bool only_sack    = (acked == 0 && rs->acked_sacked > 0);
 
 	/* dup ack, no rtt sample */
 	if (rtt_us < 0)
@@ -309,17 +305,11 @@ static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs
 	if (rtt_us > RTT_MAX)
 		rtt_us = RTT_MAX;
 
-	if (tp->sacked_out == 0) {
-		if (acked > 1 && ca->delack < 5)
-			ca->delack++;
-		else if (delayed)
-			ca->delack--;
-	}
-
-	if (first_sample || (!rs->acked_sacked && !is_delayed))
+	if (first_sample || (acked > 0 && !only_sack && !rs->is_ack_delayed)) {
 		ca->rtt_curr = rtt_us;
 		++ca->cnt_rtt;
 		ca->sum_rtt += rtt_us;
+	}
 
 	ca->base_rtt = min(ca->base_rtt, rtt_us);
 	ca->base_rtt = min(tp->srtt_us >> 3, ca->base_rtt);

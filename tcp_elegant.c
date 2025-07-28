@@ -269,10 +269,10 @@ static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		return;
 
 	if (tcp_in_slow_start(tp)) {
-		u32 p    = hybla_factor(tp, ca);
-		u32 incr = acked * p;
-		tp->snd_cwnd += incr;
-		return;
+		wwf = tcp_slow_start(tp, acked);
+		if (!wwf)
+			return;
+		wwf *= hybla_factor(tp, ca);
 	} else {
 		/* Compute WWF once per RTT boundary */
 		if (!ca->wwf_valid) {

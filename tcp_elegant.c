@@ -48,14 +48,14 @@ struct elegant {
     u32   last_base_rtt;		 /* last base RTT */
     u32   last_rtt_reset_jiffies; /* jiffies of last RTT reset */
 	
+	u32   beta;  				 /* multiplicative decrease factor */
+    u32   prior_cwnd;			 /* cwnd before loss recovery */
+	
 	u16   cnt_rtt;               /* samples in this RTT */
 
     u8    prev_ca_state;         /* last CA state */
 	u8    lt_rtt_cnt:7,          /* rtt-round counter */
 		  wwf_valid:1;           /* have we calc’d WWF this RTT? */
-
-    u32   beta;  				 /* multiplicative decrease factor */
-    u32   prior_cwnd;			 /* cwnd before loss recovery */
 } __attribute__((aligned(64)));
 
 static void rtt_reset(struct sock *sk)

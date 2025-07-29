@@ -240,18 +240,19 @@ static inline u64 fast_isqrt(u64 x)
 
 static inline u32 calc_wwf(const struct tcp_sock *tp, const struct elegant *ca)
 {
+	u32 wwf;
 	u32 inv_beta = BETA_SUM - ca->beta; 
     u32 d        = max(ca->rtt_max,    ca->max_rtt);
     u32 c        = min(ca->base_rtt,   ca->last_base_rtt);
     u32 m        = (13U * ca->rtt_curr + 3U * c) >> 4;
 
-	u64 numer	 = (u64)tp->snd_cwnd * d;
+	u64 numer	 = (u64)tp->snd_cwnd * d << E_UNIT_SQ_SHIFT;
 
 	do_div(numer, m);
 
-    u32 wwf = fast_isqrt(numer);
+    wwf = fast_isqrt(numer);
 
-    return (wwf * inv_beta + (BETA_SCALE >> 1)) >> BETA_SHIFT;
+    return (wwf >> ELEGANT_SCALE * inv_beta + (BETA_SCALE >> 1)) >> BETA_SHIFT;
 }
 
 static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)

@@ -188,18 +188,14 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 
 static inline u32 hybla_factor(const struct tcp_sock *tp, const struct elegant *ca)
 {
-    /* Clamp srtt_us to floor of 25ms to avoid tiny divisors */
-    u32 srtt_clamped = tp->srtt_us < 25000U ? 25000U : tp->srtt_us;
+    /* 1. Clamp to 25 ms floor */
+    u32 srtt = max(tp->srtt_us, 25000U);
 
-    /* Avoid div-by-zero and micro-branch cost */
-    u32 rtt = ca->rtt_curr ? ca->rtt_curr : 1U;
+    /* 2. Ensure nonzero divisor */
+    u32 rtt  = ca->rtt_curr ?: 1U;
 
-    /* Fast-path estimate using fixed-point scale instead of division */
-    u32 ratio = (rtt << 8) / srtt_clamped; // Q8 fixed-point
-    u32 p = ratio >> 8;
-
-    /* Clamp result to [1, 4] */
-    return p < 1 ? 1 : (p > 4 ? 4 : p);
+    /* 3. Integer ratio and branchless clamp to [1,4] */
+    return clamp(rtt / srtt, 1U, 4U);
 }
 
 static u32 isqrt_u64(u64 x)
@@ -233,7 +229,7 @@ static inline u64 fast_isqrt(u64 x)
         return x;
 
     /* Initial guess: 1 << (floor(log2(x)) / 2) */
-    r = 1ULL << ((63 - __builtin_clzll(x)) >> 1);
+    r = 1ULL << ((fls64(x) - 1) >> 1);
 
     /* one Newton iteration */
     r = (r + x / r) >> 1;
@@ -249,10 +245,13 @@ static inline u32 calc_wwf(const struct tcp_sock *tp, const struct elegant *ca)
     u32 c        = min(ca->base_rtt,   ca->last_base_rtt);
     u32 m        = (13U * ca->rtt_curr + 3U * c) >> 4;
 
-	u64 numer	 = (u64)tp->snd_cwnd * d << E_UNIT_SQ_SHIFT;
-	u64 wwf	 	 = (fast_isqrt(div_u64(numer, m)) >> ELEGANT_SCALE) * inv_beta + (BETA_SCALE>>1);
+	u64 numer	 = (u64)tp->snd_cwnd * d;
 
-    return (u32)(wwf >> BETA_SHIFT);
+	do_div(numer, m);
+
+    u32 wwf = fast_isqrt(numer);
+
+    return (wwf * inv_beta + (BETA_SCALE >> 1)) >> BETA_SHIFT;
 }
 
 static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)

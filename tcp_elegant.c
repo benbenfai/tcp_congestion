@@ -1,10 +1,8 @@
 #include <linux/module.h>
 #include <net/tcp.h>
 
-#include <linux/skbuff.h>
-#include <asm/div64.h>
+#include <linux/jiffies.h>
 #include <linux/math64.h>
-#include <linux/types.h>
 #include <linux/kernel.h>
 
 #define ELEGANT_SCALE 6
@@ -34,27 +32,31 @@ static int win_thresh __read_mostly = 20; /* Increased threshold for adaptive al
 module_param(win_thresh, int, 0);
 MODULE_PARM_DESC(win_thresh, "Window threshold for starting adaptive sizing");
 
-static int rtt0 = 25;
+static int rtt0 __read_mostly = 25;
 module_param(rtt0, int, 0644);
 MODULE_PARM_DESC(rtt0, "reference rout trip time (ms)");
 
 struct elegant {
-    u32  rtt_curr;              /* current RTT, per-ACK update */
-    u16  cnt_rtt;               /* samples in this RTT */
-    bool wwf_valid;             /* have we calc’d WWF this RTT? */
-    u8   prev_ca_state;         /* last CA state */
-    u8   lt_rtt_cnt;            /* rtt-round counter */
-    u32  cached_wwf;            /* cached window‐width factor */
+	u64   sum_rtt;               /* sum of RTTs in last round */
+	
+    u32   rtt_curr;              /* current RTT, per-ACK update */
+    u32   rtt_max;               /* decaying max used in wwf */
+    u32   base_rtt;              /* base RTT */
+    u32   next_rtt_delivered;    /* delivered count at round start */
+    u32   cached_wwf;            /* cached window‐width factor */
+	u32   max_rtt;               /* max RTT in last round */
+    u32   last_base_rtt;		 /* last base RTT */
+    u32   last_rtt_reset_jiffies; /* jiffies of last RTT reset */
+	
+	u16   cnt_rtt;               /* samples in this RTT */
 
-    u64  sum_rtt;               /* sum of RTTs in last round */
-    u32  max_rtt;               /* max RTT in last round */
-    u32  rtt_max;               /* decaying max used in wwf */
-    u32  base_rtt, last_base_rtt;
-    u32  last_rtt_reset_jiffies;
-    u32  beta;                  /* multiplicative decrease factor */
-    u32  next_rtt_delivered;    /* delivered count at round start */
-    u32  prior_cwnd;            /* cwnd before loss recovery */
-};
+    u8    prev_ca_state;         /* last CA state */
+	u8    lt_rtt_cnt:7,          /* rtt-round counter */
+		  wwf_valid:1;           /* have we calc’d WWF this RTT? */
+
+    u32   beta;  				 /* multiplicative decrease factor */
+    u32   prior_cwnd;			 /* cwnd before loss recovery */
+} __attribute__((aligned(64)));
 
 static void rtt_reset(struct sock *sk)
 {
@@ -318,7 +320,7 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
-	if (rs->delivered < 0 || rs->interval_us <= 0)
+	if (unlikely(rs->delivered < 0 || rs->interval_us <= 0))
 		return; /* Not a valid observation */
 	
 	if (after(tcp_jiffies32, ca->last_rtt_reset_jiffies + BASE_RTT_RESET_INTERVAL)) {

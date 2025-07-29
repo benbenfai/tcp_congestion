@@ -39,27 +39,22 @@ module_param(rtt0, int, 0644);
 MODULE_PARM_DESC(rtt0, "reference rout trip time (ms)");
 
 struct elegant {
-	u64	sum_rtt;	/* sum of rtt's measured within last rtt */
+    u32  rtt_curr;              /* current RTT, per-ACK update */
+    u16  cnt_rtt;               /* samples in this RTT */
+    bool wwf_valid;             /* have we calc’d WWF this RTT? */
+    u8   prev_ca_state;         /* last CA state */
+    u8   lt_rtt_cnt;            /* rtt-round counter */
+    u32  cached_wwf;            /* cached window‐width factor */
 
-	u32	rtt_max;        /* Max RTT used for wwf, decays */
-	u32	rtt_curr;		/*current rtt*/
-	u32	base_rtt;	/* min of all rtt in usec */
-	u32	last_base_rtt;
-	u32	max_rtt;	/* max rtt of the current round for alpha/beta */
-	u32 last_rtt_reset_jiffies; /* For periodic base_rtt reset */
-
-	u32	beta;		/* Muliplicative decrease */
-	u32 next_rtt_delivered; /* scb->tx.delivered at end of round */
-	u32	prior_cwnd;	/* prior cwnd upon entering loss recovery */
-	u32 cached_wwf;
-
-	u16	cnt_rtt;	/* # of rtts measured within last rtt */
-	u8 lt_rtt_cnt;
-	u8 prev_ca_state;     /* CA state on previous ACK */
-
-	bool wwf_valid;
-
-} __attribute__((__packed__));
+    u64  sum_rtt;               /* sum of RTTs in last round */
+    u32  max_rtt;               /* max RTT in last round */
+    u32  rtt_max;               /* decaying max used in wwf */
+    u32  base_rtt, last_base_rtt;
+    u32  last_rtt_reset_jiffies;
+    u32  beta;                  /* multiplicative decrease factor */
+    u32  next_rtt_delivered;    /* delivered count at round start */
+    u32  prior_cwnd;            /* cwnd before loss recovery */
+};
 
 static void rtt_reset(struct sock *sk)
 {
@@ -269,16 +264,15 @@ static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		return;
 
 	if (tcp_in_slow_start(tp)) {
-		wwf = tcp_slow_start(tp, acked);
+		u32 p    = hybla_factor(tp, ca);
+
+        wwf = tcp_slow_start(tp, acked * p);
 		if (!wwf)
 			return;
-		wwf *= hybla_factor(tp, ca);
 	} else {
 		/* Compute WWF once per RTT boundary */
 		if (!ca->wwf_valid) {
-
 			ca->cached_wwf = calc_wwf(tp, ca);
-			
 			ca->wwf_valid  = true;
         }
 

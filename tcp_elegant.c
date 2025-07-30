@@ -25,8 +25,8 @@
 #define BASE_RTT_RESET_INTERVAL (10 * HZ) /* 10 seconds for base_rtt reset */
 #define INV_M_SHIFT 32
 
-static const u32 bbr_lt_intvl_min_rtts = 4;
-static const u32 bbr_cwnd_min_target = 4;
+static const u32 lt_intvl_min_rtts = 4;
+static const u32 cwnd_min_target = 4;
 
 static int win_thresh __read_mostly = 20; /* Increased threshold for adaptive alpha/beta */
 module_param(win_thresh, int, 0);
@@ -44,14 +44,14 @@ struct elegant {
     u32   base_rtt;              /* base RTT */
     u32   next_rtt_delivered;    /* delivered count at round start */
     u32   cached_wwf;            /* cached window‐width factor */
-	u32   max_rtt;               /* max RTT in last round */
+    u32   max_rtt;               /* max RTT in last round */
     u32   last_base_rtt;		 /* last base RTT */
     u32   last_rtt_reset_jiffies; /* jiffies of last RTT reset */
 	
-	u32   beta;  				 /* multiplicative decrease factor */
+    u32   beta;  				 /* multiplicative decrease factor */
     u32   prior_cwnd;			 /* cwnd before loss recovery */
 	
-	u16   cnt_rtt;               /* samples in this RTT */
+    u16   cnt_rtt;               /* samples in this RTT */
 
     u8    prev_ca_state;         /* last CA state */
 	u8    lt_rtt_cnt:7,          /* rtt-round counter */
@@ -319,6 +319,8 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
+	
+	bool refreshMax = false;
 
 	if (unlikely(rs->delivered < 0 || rs->interval_us <= 0))
 		return; /* Not a valid observation */
@@ -327,9 +329,10 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 		ca->rtt_max = ca->max_rtt;
 		ca->max_rtt = tp->srtt_us >> 3;
 		ca->last_rtt_reset_jiffies = jiffies;
+		refreshMax = true;
 	}
 
-	if (ca->lt_rtt_cnt > 4 * bbr_lt_intvl_min_rtts) {
+	if (ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
 		update_params(rs, sk);
 		ca->lt_rtt_cnt = 0;
 		if (ca->last_base_rtt < ca->base_rtt) {
@@ -337,7 +340,11 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 		} else {
 			ca->last_base_rtt = ca->base_rtt;
 		}
-		ca->base_rtt = U32_MAX;
+		ca->base_rtt = tp->srtt_us >> 3;
+		if (ca->rtt_max > ca->max_rtt && !refreshMax) {
+			ca->rtt_max = ca->rtt_max - (ca->rtt_max >> 3);
+			ca->rtt_max = max(ca->rtt_max, ca->base_rtt);
+		}
 	}
 
 	/* See if we've reached the next RTT */
@@ -370,7 +377,7 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 	ca->prev_ca_state = state;
 
 	if (rs->losses > 0)
-		cwnd = max_t(s32, cwnd - rs->losses, 1);
+		cwnd = max_t(s32, cwnd - rs->losses, cwnd_min_target);
 
 	if (state == TCP_CA_Recovery && prev_state != TCP_CA_Recovery) {
 		ca->next_rtt_delivered = tp->delivered;  /* start round now */
@@ -382,7 +389,7 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 		cwnd = max(cwnd, ca->prior_cwnd);
 	}
 
-	cwnd = max(cwnd, bbr_cwnd_min_target);
+	cwnd = max(cwnd, cwnd_min_target);
 
 done:
 	tp->snd_cwnd = min(cwnd, tp->snd_cwnd_clamp);

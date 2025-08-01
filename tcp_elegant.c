@@ -50,6 +50,7 @@ struct elegant {
 	
     u32   beta;  				 /* multiplicative decrease factor */
     u32   prior_cwnd;			 /* cwnd before loss recovery */
+	u32   prior_ssthresh;
 	
     u16   cnt_rtt;               /* samples in this RTT */
 
@@ -103,6 +104,7 @@ static u32 tcp_elegant_ssthresh(struct sock *sk)
 	struct elegant *ca = inet_csk_ca(sk);
 	
 	ca->prior_cwnd = tp->snd_cwnd;
+	ca->prior_ssthresh = tp->snd_ssthresh;
 
 	return max(tp->snd_cwnd - calculate_beta_scaled_value(ca, tp->snd_cwnd), 2U);
 }
@@ -382,11 +384,11 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 	if (state == TCP_CA_Recovery && prev_state != TCP_CA_Recovery) {
 		ca->next_rtt_delivered = tp->delivered;  /* start round now */
 		/* Cut unused cwnd from app behavior, TSQ, or TSO deferral: */
-		cwnd = max(cwnd, tcp_packets_in_flight(tp) + rs->acked_sacked);
+		cwnd = max(cwnd, tp->snd_ssthresh);
 		ca->wwf_valid = false;
 		goto done;
 	} else if (prev_state >= TCP_CA_Recovery && state < TCP_CA_Recovery) {
-		cwnd = max(cwnd, ca->prior_cwnd);
+		cwnd = max(cwnd, min(ca->prior_cwnd, tp->snd_ssthresh));
 	}
 
 	cwnd = max(cwnd, cwnd_min_target);
@@ -397,10 +399,11 @@ done:
 
 static u32 tcp_elegant_undo_cwnd(struct sock *sk)
 {
-	const struct tcp_sock *tp = tcp_sk(sk);
+	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
 	ca->lt_rtt_cnt = 0;
+	tp->snd_ssthresh = ca->prior_ssthresh;
 	
 	return max(tp->snd_cwnd, ca->prior_cwnd);
 }

@@ -384,11 +384,11 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 	if (state == TCP_CA_Recovery && prev_state != TCP_CA_Recovery) {
 		ca->next_rtt_delivered = tp->delivered;  /* start round now */
 		/* Cut unused cwnd from app behavior, TSQ, or TSO deferral: */
-		cwnd = max(cwnd, tp->snd_ssthresh);
+		cwnd = max(cwnd, tcp_packets_in_flight(tp) + rs->acked_sacked);
 		ca->wwf_valid = false;
 		goto done;
 	} else if (prev_state >= TCP_CA_Recovery && state < TCP_CA_Recovery) {
-		cwnd = max(cwnd, min(ca->prior_cwnd, tp->snd_ssthresh));
+		cwnd = max(cwnd, tp->snd_ssthresh);
 	}
 
 	cwnd = max(cwnd, cwnd_min_target);

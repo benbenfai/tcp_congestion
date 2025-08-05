@@ -366,6 +366,8 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 		cwnd = max(cwnd, tcp_packets_in_flight(tp) + rs->acked_sacked);
 		goto done;
 	} else if (prev_state >= TCP_CA_Recovery && state < TCP_CA_Recovery) {
+		update_params(rs, sk));
+		ca->lt_rtt_cnt = 0;
 		ca->wwf_valid = false;
 		cwnd = max(cwnd, tp->snd_ssthresh);
 	}

@@ -47,16 +47,19 @@ struct elegant {
 	u8    lt_rtt_cnt:7,          /* rtt-round counter */
 	      wwf_valid:1;           /* have we calc’d WWF this RTT? */
     u8    prev_ca_state;         /* last CA state */
+	u8      _padding1[5];
 	
     u32   beta;  				 /* multiplicative decrease factor */
     u32   cached_wwf;            /* cached window‐width factor */
     u32   rtt_max;               /* decaying max used in wwf */
     u32   last_base_rtt;		 /* last base RTT */
     u32   next_rtt_delivered;    /* delivered count at round start */
+	u8      _padding2[12];
 
     u32   last_rtt_reset_jiffies; /* jiffies of last RTT reset */
     u32   prior_cwnd;			 /* cwnd before loss recovery */
     u32   prior_ssthresh;
+	u8      _padding3[20];
 
 } __attribute__((aligned(64)));
 
@@ -160,17 +163,20 @@ static void update_params(const struct rate_sample *rs, struct sock *sk)
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
-    if (ca->rtt_curr > 0 && ca->last_rtt_curr > ca->rtt_curr * 1.5 && tp->snd_cwnd >= win_thresh) {
-		ca->beta = BETA_MIN;
-	} else {
-		if (tp->snd_cwnd < win_thresh) {
-			ca->beta = BETA_BASE;
+    if (tp->snd_cwnd < win_thresh) {
+        ca->beta = BETA_BASE;
+    } else {
+		u32 dm = max_delay(ca);
+		u32 da = avg_delay(ca);
+		
+		if ((ca->rtt_curr > 0 && ca->last_rtt_curr >> 1 > ca->rtt_curr && ca->rtt_max > ca->max_rtt)
+				|| (ca->rtt_curr > 0 && ca->rtt_curr < ca->base_rtt + (ca->base_rtt >> 3))
+				|| (ca->base_rtt > 0 && ca->base_rtt < ca->last_base_rtt - (ca->last_base_rtt >> 2))) {
+			ca->beta = BETA_MIN;
 		} else if (ca->cnt_rtt > 0) {
-			u32 dm = max_delay(ca);
-			u32 da = avg_delay(ca);
-
-			ca->beta = beta(rs, da, dm);
+			ca->beta = beta(rs, da, dm);	
 		}
+		
 	}
 
 	rtt_reset(sk);

@@ -39,26 +39,25 @@ MODULE_PARM_DESC(rtt0, "reference rout trip time (ms)");
 struct elegant {
 	u64   sum_rtt;               /* sum of RTTs in last round */
 
-    u32   rtt_max;               /* decaying max used in wwf */
-	u32   max_rtt;               /* max RTT in last round */
+    u32   rtt_curr;              /* current RTT, per-ACK update */
+    u32   last_rtt_curr;
     u32   base_rtt;              /* base RTT */
-	u32   last_base_rtt;		 /* last base RTT */
-	u32   rtt_curr;              /* current RTT, per-ACK update */
-	u32   last_rtt_curr;
-    u32   next_rtt_delivered;    /* delivered count at round start */
-    u32   cached_wwf;            /* cached window‐width factor */
-
-    u32   last_rtt_reset_jiffies; /* jiffies of last RTT reset */
+    u32   max_rtt;               /* max RTT in last round */
+	u16   cnt_rtt;               /* samples in this RTT */
+	u8    lt_rtt_cnt:7,          /* rtt-round counter */
+	      wwf_valid:1;           /* have we calc’d WWF this RTT? */
+    u8    prev_ca_state;         /* last CA state */
 	
     u32   beta;  				 /* multiplicative decrease factor */
-    u32   prior_cwnd;			 /* cwnd before loss recovery */
-	u32   prior_ssthresh;
-	
-    u16   cnt_rtt;               /* samples in this RTT */
+    u32   cached_wwf;            /* cached window‐width factor */
+    u32   rtt_max;               /* decaying max used in wwf */
+    u32   last_base_rtt;		 /* last base RTT */
+    u32   next_rtt_delivered;    /* delivered count at round start */
 
-    u8    prev_ca_state;         /* last CA state */
-	u8    lt_rtt_cnt:7,          /* rtt-round counter */
-		  wwf_valid:1;           /* have we calc’d WWF this RTT? */
+    u32   last_rtt_reset_jiffies; /* jiffies of last RTT reset */
+    u32   prior_cwnd;			 /* cwnd before loss recovery */
+    u32   prior_ssthresh;
+
 } __attribute__((aligned(64)));
 
 static void rtt_reset(struct sock *sk)
@@ -71,28 +70,28 @@ static void rtt_reset(struct sock *sk)
 
 static void tcp_elegant_init(struct sock *sk)
 {
-	const struct tcp_sock *tp = tcp_sk(sk);
-	struct elegant *ca = inet_csk_ca(sk);
+    const struct tcp_sock *tp = tcp_sk(sk);
+    struct elegant *ca = inet_csk_ca(sk);
 
-	ca->rtt_max = 0;
-	ca->max_rtt = ca->rtt_max;
-	ca->base_rtt = U32_MAX;
-	ca->last_base_rtt = ca->base_rtt;
-	ca->rtt_curr = 0;
-	ca->last_base_rtt = 0;
-	ca->last_rtt_reset_jiffies = jiffies;
+    ca->base_rtt = U32_MAX;
+    ca->last_base_rtt = U32_MAX;
+    ca->max_rtt = 0;
+    ca->rtt_max = 0;
+    ca->rtt_curr = 0;
+    ca->last_rtt_curr = 0;
 
-	ca->beta = BETA_BASE;
-	ca->next_rtt_delivered = tp->delivered;
-	ca->prior_cwnd = TCP_INIT_CWND;
-	ca->cached_wwf = 0;
+    ca->beta = BETA_BASE;
+    ca->prior_cwnd = TCP_INIT_CWND;
+    ca->prior_ssthresh = 0;
+    ca->cached_wwf = 0;
 
-	rtt_reset(sk);
-
-	ca->lt_rtt_cnt = 0;
-	ca->prev_ca_state = TCP_CA_Open;
-
-	ca->wwf_valid = false;
+    ca->lt_rtt_cnt = 0;
+    ca->cnt_rtt = 0;
+    ca->sum_rtt = 0;
+    ca->prev_ca_state = TCP_CA_Open;
+    ca->wwf_valid = false;
+    ca->next_rtt_delivered = tp->delivered;
+    ca->last_rtt_reset_jiffies = jiffies;
 }
 
 /* Calculate value scaled by beta */

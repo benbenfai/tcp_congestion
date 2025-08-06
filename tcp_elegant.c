@@ -38,14 +38,16 @@ MODULE_PARM_DESC(rtt0, "reference rout trip time (ms)");
 
 struct elegant {
 	u64   sum_rtt;               /* sum of RTTs in last round */
-	
-    u32   rtt_curr;              /* current RTT, per-ACK update */
+
     u32   rtt_max;               /* decaying max used in wwf */
+	u32   max_rtt;               /* max RTT in last round */
     u32   base_rtt;              /* base RTT */
+	u32   last_base_rtt;		 /* last base RTT */
+	u32   rtt_curr;              /* current RTT, per-ACK update */
+	u32   last_rtt_curr;
     u32   next_rtt_delivered;    /* delivered count at round start */
     u32   cached_wwf;            /* cached window‐width factor */
-    u32   max_rtt;               /* max RTT in last round */
-    u32   last_base_rtt;		 /* last base RTT */
+
     u32   last_rtt_reset_jiffies; /* jiffies of last RTT reset */
 	
     u32   beta;  				 /* multiplicative decrease factor */
@@ -72,11 +74,12 @@ static void tcp_elegant_init(struct sock *sk)
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
+	ca->rtt_max = 0;
+	ca->max_rtt = ca->rtt_max;
 	ca->base_rtt = U32_MAX;
 	ca->last_base_rtt = ca->base_rtt;
-	ca->rtt_max = 0;
-	ca->rtt_curr = ca->rtt_max;
-	ca->max_rtt = ca->rtt_curr;
+	ca->rtt_curr = 0;
+	ca->last_base_rtt = 0;
 	ca->last_rtt_reset_jiffies = jiffies;
 
 	ca->beta = BETA_BASE;
@@ -158,13 +161,17 @@ static void update_params(const struct rate_sample *rs, struct sock *sk)
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
-	if (tp->snd_cwnd < win_thresh) {
-		ca->beta = BETA_BASE;
-	} else if (ca->cnt_rtt > 0) {
-		u32 dm = max_delay(ca);
-		u32 da = avg_delay(ca);
+    if (ca->rtt_curr > 0 && ca->last_rtt_curr > ca->rtt_curr * 1.5 && tp->snd_cwnd >= win_thresh) {
+		ca->beta = BETA_MIN;
+	} else {
+		if (tp->snd_cwnd < win_thresh) {
+			ca->beta = BETA_BASE;
+		} else if (ca->cnt_rtt > 0) {
+			u32 dm = max_delay(ca);
+			u32 da = avg_delay(ca);
 
-		ca->beta = beta(rs, da, dm);
+			ca->beta = beta(rs, da, dm);
+		}
 	}
 
 	rtt_reset(sk);
@@ -281,6 +288,7 @@ static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs
 		rtt_us = RTT_MAX;
 
 	if (first_sample || (acked > 0 && !only_sack && !rs->is_ack_delayed)) {
+		ca->last_rtt_curr = ca->rtt_curr;
 		ca->rtt_curr = rtt_us;
 		++ca->cnt_rtt;
 		ca->sum_rtt += rtt_us;

@@ -175,7 +175,6 @@ static void tcp_elegant_reset(struct sock *sk)
 	ca->beta = BETA_BASE;
     ca->rtt_max = 0;
     ca->last_base_rtt = U32_MAX;
-	ca->cached_wwf = 0;
 
 }
 
@@ -318,13 +317,7 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 		ca->lt_is_sampling = false;
 	}
 
-	if (after(tcp_jiffies32, ca->last_rtt_reset_jiffies + BASE_RTT_RESET_INTERVAL)) {
-		ca->rtt_max = ca->max_rtt;
-		ca->max_rtt = ca->base_rtt;
-		ca->last_rtt_reset_jiffies = jiffies;
-	}
-
-	if (ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
+	if (ca->lt_is_sampling && ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
 		ca->lt_rtt_cnt = 0;
 		ca->lt_is_sampling = false;
 		if (ca->last_base_rtt < ca->base_rtt) {
@@ -335,6 +328,12 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 		ca->base_rtt = U32_MAX;
 	}
 
+	if (after(tcp_jiffies32, ca->last_rtt_reset_jiffies + BASE_RTT_RESET_INTERVAL)) {
+		ca->rtt_max = ca->max_rtt;
+		ca->max_rtt = ca->base_rtt;
+		ca->last_rtt_reset_jiffies = jiffies;
+	}
+
 	tcp_elegant_pkts_acked(sk, rs);
 
 }
@@ -342,7 +341,6 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *rs)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-	struct elegant *ca = inet_csk_ca(sk);
 
 	tcp_elegant_update(sk, rs);
 

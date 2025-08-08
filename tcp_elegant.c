@@ -43,7 +43,7 @@ struct elegant {
     u32   cnt_rtt:16,            /* samples in this RTT */
           lt_rtt_cnt:7,          /* rtt-round counter */
           lt_is_sampling:1,      /* have we calc’d WWF this RTT? */
-          prev_ca_state:7,
+          unused:7,
           wwf_valid:1;           /* last CA state */
 
     u32   beta;  				 /* multiplicative decrease factor */
@@ -53,7 +53,6 @@ struct elegant {
     u32   next_rtt_delivered;    /* delivered count at round start */
 
     u32   last_rtt_reset_jiffies; /* jiffies of last RTT reset */
-    u32   prior_cwnd;			 /* cwnd before loss recovery */
 
 } __attribute__((__packed__));
 
@@ -78,7 +77,6 @@ static void tcp_elegant_init(struct sock *sk)
 	ca->cnt_rtt = 0;
 	ca->lt_rtt_cnt = 0;
 	ca->lt_is_sampling = false;
-	ca->prev_ca_state = TCP_CA_Open;
 	ca->wwf_valid = false;
 
     ca->beta = BETA_BASE;
@@ -88,7 +86,6 @@ static void tcp_elegant_init(struct sock *sk)
     ca->next_rtt_delivered = tp->delivered;
 
     ca->last_rtt_reset_jiffies = jiffies;
-	ca->prior_cwnd = TCP_INIT_CWND;
 }
 
 /* Calculate value scaled by beta */
@@ -101,8 +98,6 @@ static u32 tcp_elegant_ssthresh(struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
-
-	ca->prior_cwnd = tp->snd_cwnd;
 
 	return max(tp->snd_cwnd - calculate_beta_scaled_value(ca, tp->snd_cwnd), 2U);
 }
@@ -180,6 +175,7 @@ static void tcp_elegant_reset(struct sock *sk)
 	ca->beta = BETA_BASE;
     ca->rtt_max = 0;
     ca->last_base_rtt = U32_MAX;
+	ca->cached_wwf = 0;
 
 }
 
@@ -188,8 +184,8 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 	struct elegant *ca = inet_csk_ca(sk);
 
 	if (new_state == TCP_CA_Loss) {
-		ca->prev_ca_state = TCP_CA_Loss;
 		tcp_elegant_reset(sk);
+		ca->wwf_valid = false;
 	}
 }
 
@@ -272,7 +268,7 @@ static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs
 
 	u32 rtt_us = rs->rtt_us;
 	u32 acked = rs->delivered - rs->prior_delivered;
-	bool first_sample = (ca->cnt_rtt == 0);
+	bool first_sample = (ca->cnt_rtt == 0) || (ca->rtt_curr == 0);
 	bool only_sack    = (acked == 0 && rs->acked_sacked > 0);
 
 	/* dup ack, no rtt sample */
@@ -301,8 +297,6 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
-	bool refreshMax = false;
-
 	if (unlikely(rs->delivered < 0 || rs->interval_us <= 0))
 		return; /* Not a valid observation */
 
@@ -328,7 +322,6 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 		ca->rtt_max = ca->max_rtt;
 		ca->max_rtt = ca->base_rtt;
 		ca->last_rtt_reset_jiffies = jiffies;
-		refreshMax = true;
 	}
 
 	if (ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
@@ -340,10 +333,6 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 			ca->last_base_rtt = ca->base_rtt;
 		}
 		ca->base_rtt = U32_MAX;
-		if (ca->rtt_max > ca->max_rtt && !refreshMax) {
-			ca->rtt_max = ca->rtt_max - (ca->rtt_max >> 3);
-			ca->rtt_max = max(ca->rtt_max, ca->base_rtt);
-		}
 	}
 
 	tcp_elegant_pkts_acked(sk, rs);
@@ -355,38 +344,14 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
-	u8 prev_state = ca->prev_ca_state, state = inet_csk(sk)->icsk_ca_state;
-	u32 cwnd = tp->snd_cwnd;
-
 	tcp_elegant_update(sk, rs);
 
-	if (!rs->acked_sacked)
-		goto done;  /* no packet fully ACKed; just apply caps */
+    if (rs->losses > 0) {
+        u32 cwnd = tp->snd_cwnd;
+        cwnd = max_t(s32, cwnd - rs->losses, cwnd_min_target);
+        tp->snd_cwnd = cwnd;
+    }
 
-	if (state == TCP_CA_Open)
-		goto done;
-
-	ca->prev_ca_state = state;
-
-	if (rs->losses > 0)
-		cwnd = max_t(s32, cwnd - rs->losses, cwnd_min_target);
-
-	if (state == TCP_CA_Recovery && prev_state != TCP_CA_Recovery) {
-		ca->next_rtt_delivered = tp->delivered;  /* start round now */
-		ca->wwf_valid = false;
-		/* Cut unused cwnd from app behavior, TSQ, or TSO deferral: */
-		cwnd = max(cwnd, tcp_packets_in_flight(tp) + rs->acked_sacked);
-		goto done;
-	} else if (prev_state >= TCP_CA_Recovery && state < TCP_CA_Recovery) {
-		update_params(sk);
-		ca->wwf_valid = false;
-		cwnd = max(cwnd, ca->prior_cwnd);
-	}
-
-	cwnd = max(cwnd, cwnd_min_target);
-
-done:
-	tp->snd_cwnd = min(cwnd, tp->snd_cwnd_clamp);
 }
 
 static u32 tcp_elegant_undo_cwnd(struct sock *sk)

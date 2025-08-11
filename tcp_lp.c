@@ -636,7 +636,6 @@ static void tcp_lp_pkts_acked(struct sock *sk, const struct rate_sample *rs)
 
 	if (rs->rtt_us > 0) {
 		tcp_lp_rtt_sample(sk, rs->rtt_us);
-		tcp_illinois_pkts_acked(sk, rs);
 	}
 
 	/* calc inference */
@@ -670,18 +669,7 @@ static void tcp_lp_pkts_acked(struct sock *sk, const struct rate_sample *rs)
 	/* happened within inference
 	 * drop snd_cwnd into 1 */
 	if (lp->flag & LP_WITHIN_INF) {
-
-		lp->hybla_en = true;
-		//tp->snd_cwnd = max(tp->snd_cwnd - ((tp->snd_cwnd * lp->beta) >> BETA_SHIFT), 2U);
-
-	}
-
-	/* happened after inference
-	 * cut snd_cwnd into half */
-	else {
-
-		tp->snd_cwnd = max(tp->snd_cwnd - (tp->snd_cwnd>>TCP_SCALABLE_MD_SCALE), 2U);
-
+		tp->snd_cwnd = max(tp->snd_cwnd - ((tp->snd_cwnd * lp->beta) >> BETA_SHIFT), 2U);
 	}
 
 	/* record this drop time */
@@ -716,21 +704,17 @@ static void illinois_update(struct sock *sk, const struct rate_sample *rs)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct lp *ca = inet_csk_ca(sk);
 
+	tcp_lp_pkts_acked(sk, rs);
+
 	if (rs->delivered < 0 || rs->interval_us <= 0)
 		return; /* Not a valid observation */
 
+	tcp_illinois_pkts_acked(rs);
+	
 	/* See if we've reached the next RTT */
 	if (!before(rs->prior_delivered, ca->next_rtt_delivered)) {
 		ca->next_rtt_delivered = tp->delivered;
 		update_params(sk);
-		/* Keep base_rtt tracking long-term minimum via tcp_illinois_pkts_acked */
-		ca->max_rtt = ca->base_rtt; /* Reset max_rtt relative to base for the new round */
-	}
-
-	if (!rs->is_app_limited ||
-	    ((u64)rs->delivered * tp->rate_interval_us >=
-	     (u64)tp->rate_delivered * rs->interval_us)) {
-		tcp_lp_pkts_acked(sk, rs);
 	}
 
 }
@@ -744,29 +728,9 @@ static void tcp_lp_cong_control(struct sock *sk, const struct rate_sample *rs)
 	
 	illinois_update(sk, rs);
 
-	if (!rs->acked_sacked)
-		goto done;  /* no packet fully ACKed; just apply caps */
-
-	if (state == TCP_CA_Open) /* Let cong_control adjustments run even if hybla_en is true */
-		goto done;
-
-	if (rs->losses > 0)
-		cwnd = max_t(s32, cwnd - rs->losses, 1);
-
-	if (state == TCP_CA_Recovery && prev_state != TCP_CA_Recovery) {
-		lp->next_rtt_delivered = tp->delivered;  /* start round now */
-		/* Cut unused cwnd from app behavior, TSQ, or TSO deferral: */
-		cwnd = max(cwnd, tcp_packets_in_flight(tp) + rs->acked_sacked);
-		goto done;
-	} else if (prev_state >= TCP_CA_Recovery && state < TCP_CA_Recovery) {
-		/* Exiting loss recovery; restore cwnd saved before recovery. */
-		cwnd = max(cwnd, lp->prior_cwnd);
-	}
-
-	cwnd = max(cwnd, tcp_packets_in_flight(tp) + bbr_cwnd_min_target);
-
-done:
-	tp->snd_cwnd = min(cwnd, tp->snd_cwnd_clamp);
+    if (rs->losses > 0) {
+        tp->snd_cwnd = max_t(s32, tp->snd_cwnd - rs->losses, cwnd_min_target);
+    }
 }
 
 static void tcp_westwood_ack(struct sock *sk, u32 ack_flags)

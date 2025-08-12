@@ -318,7 +318,7 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 		ca->lt_rtt_cnt = 0;
 		ca->lt_is_sampling = false;
 		ca->max_rtt = ca->max_rtt_trend;
-		ca->base_rtt = base_rtt_trend;
+		ca->base_rtt = ca->base_rtt_trend;
 	}
 
 	tcp_elegant_pkts_acked(sk, rs);

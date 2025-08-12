@@ -1,4 +1,3 @@
-
 #include <linux/module.h>
 #include <net/tcp.h>
 #include <linux/jiffies.h>
@@ -473,7 +472,7 @@ static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs
 	}
 
 	ca->base_rtt = min(ca->base_rtt, rtt_us);
-	ca->base_rtt = min(tp->srtt_us >> 3, ca->base_rtt);
+	ca->base_rtt = min(ca->base_rtt_trend, ca->base_rtt);
 
 	/* and max */
 	if (ca->max_rtt < rtt_us)
@@ -493,6 +492,8 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 		ca->next_rtt_delivered = tp->delivered;
 		ca->lt_rtt_cnt++;
 		ca->wwf_valid = false;
+		ca->max_rtt_trend = (ca->max_rtt_trend >> 1) + (ca->max_rtt >> 1);
+		ca->base_rtt_trend = (ca->base_rtt_trend >> 1) + (ca->base_rtt >> 1);
 		update_params(sk);
 	}
 
@@ -509,13 +510,11 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 	if (ca->lt_is_sampling && ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
 		ca->lt_rtt_cnt = 0;
 		ca->lt_is_sampling = false;
-		ca->max_rtt_trend = (ca->max_rtt_trend >> 1) + (ca->max_rtt >> 1);
-		ca->base_rtt_trend = (ca->base_rtt_trend >> 1) + (ca->base_rtt >> 1);
 	}
 
 	if (after(tcp_jiffies32, ca->last_rtt_reset_jiffies + BASE_RTT_RESET_INTERVAL) && !rs->is_ack_delayed) {
-		ca->max_rtt = ca->base_rtt;
-		ca->base_rtt = U32_MAX;
+		ca->max_rtt = ca->max_rtt_trend;
+		ca->base_rtt = ca->base_rtt_trend;
 		ca->last_rtt_reset_jiffies = jiffies;
 	}
 

@@ -21,6 +21,8 @@
 #define BETA_BASE	BETA_MAX
 #define BETA_SUM   (BETA_SCALE + BETA_MIN + BETA_MAX)
 
+#define BASE_RTT_RESET_INTERVAL (10 * HZ) /* 10 seconds for base_rtt reset */
+
 static const u32 lt_intvl_min_rtts = 4;
 static const u32 cwnd_min_target = 4;
 
@@ -49,6 +51,8 @@ struct elegant {
     u32   base_rtt_trend;		 /* last base RTT */
     u32   cached_wwf;            /* cached window‐width factor */
     u32   next_rtt_delivered;    /* delivered count at round start */
+
+    u32   last_rtt_reset_jiffies; /* jiffies of last RTT reset */
 
 } __attribute__((__packed__));
 
@@ -81,6 +85,7 @@ static void tcp_elegant_init(struct sock *sk)
     ca->cached_wwf = 0;
     ca->next_rtt_delivered = tp->delivered;
 
+    ca->last_rtt_reset_jiffies = jiffies;
 }
 
 /* Calculate value scaled by beta */
@@ -312,6 +317,8 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 	if (ca->lt_is_sampling && ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
 		ca->lt_rtt_cnt = 0;
 		ca->lt_is_sampling = false;
+		ca->max_rtt = ca->max_rtt_trend;
+		ca->base_rtt = base_rtt_trend;
 	}
 
 	tcp_elegant_pkts_acked(sk, rs);

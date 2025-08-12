@@ -21,8 +21,6 @@
 #define BETA_BASE	BETA_MAX
 #define BETA_SUM   (BETA_SCALE + BETA_MIN + BETA_MAX)
 
-#define BASE_RTT_RESET_INTERVAL (10 * HZ) /* 10 seconds for base_rtt reset */
-
 static const u32 lt_intvl_min_rtts = 4;
 static const u32 cwnd_min_target = 4;
 
@@ -51,8 +49,6 @@ struct elegant {
     u32   base_rtt_trend;		 /* last base RTT */
     u32   cached_wwf;            /* cached window‐width factor */
     u32   next_rtt_delivered;    /* delivered count at round start */
-
-    u32   last_rtt_reset_jiffies; /* jiffies of last RTT reset */
 
 } __attribute__((__packed__));
 
@@ -85,7 +81,6 @@ static void tcp_elegant_init(struct sock *sk)
     ca->cached_wwf = 0;
     ca->next_rtt_delivered = tp->delivered;
 
-    ca->last_rtt_reset_jiffies = jiffies;
 }
 
 /* Calculate value scaled by beta */
@@ -279,7 +274,7 @@ static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs
 	}
 
 	ca->base_rtt = min(ca->base_rtt, rtt_us);
-	ca->base_rtt = min(tp->srtt_us >> 3, ca->base_rtt);
+	ca->base_rtt = min(ca->base_rtt_trend, ca->base_rtt);
 
 	/* and max */
 	if (ca->max_rtt < rtt_us)
@@ -299,6 +294,8 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 		ca->next_rtt_delivered = tp->delivered;
 		ca->lt_rtt_cnt++;
 		ca->wwf_valid = false;
+		ca->max_rtt_trend = (ca->max_rtt_trend >> 1) + (ca->max_rtt >> 1);
+		ca->base_rtt_trend = (ca->base_rtt_trend >> 1) + (ca->base_rtt >> 1);
 		update_params(sk);
 	}
 
@@ -315,14 +312,6 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 	if (ca->lt_is_sampling && ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
 		ca->lt_rtt_cnt = 0;
 		ca->lt_is_sampling = false;
-		ca->max_rtt_trend = (ca->max_rtt_trend >> 1) + (ca->max_rtt >> 1);
-		ca->base_rtt_trend = (ca->base_rtt_trend >> 1) + (ca->base_rtt >> 1);
-	}
-
-	if (after(tcp_jiffies32, ca->last_rtt_reset_jiffies + BASE_RTT_RESET_INTERVAL) && !rs->is_ack_delayed) {
-		ca->max_rtt = ca->base_rtt;
-		ca->base_rtt = U32_MAX;
-		ca->last_rtt_reset_jiffies = jiffies;
 	}
 
 	tcp_elegant_pkts_acked(sk, rs);

@@ -3,6 +3,7 @@
 #include <linux/jiffies.h>
 #include <linux/math64.h>
 #include <linux/kernel.h>
+#include <linux/hrtimer.h>  /* for NSEC_PER_SEC */
 
 #define ELEGANT_SCALE 6
 #define ELEGANT_UNIT (1 << ELEGANT_SCALE)          // 64
@@ -66,6 +67,7 @@ struct elegant {
 	u32 local_ref_time;
 	u32 last_drop;
 	u32 inference;
+	u32 frozen_ssthresh;
 
 	u64   sum_rtt;               /* sum of RTTs in last round */
 
@@ -111,6 +113,7 @@ static void tcp_elegant_init(struct sock *sk)
 	ca->local_ref_time = 0;
 	ca->last_drop = 0;
 	ca->inference = 0;
+	ca->frozen_ssthresh;
 
 	ca->sum_rtt = 0;
 
@@ -347,10 +350,16 @@ static void tcp_lp_pkts_acked(struct sock *sk, const struct ack_sample *sample)
 		ca->inference = 3 * delta;
 
 	/* test if within inference */
-	if (ca->last_drop && (now - ca->last_drop < ca->inference))
+	if (ca->last_drop && (now - ca->last_drop < ca->inference)) {
+		if (!(ca->flag & LP_WITHIN_INF)) {
+            /* Just entered inference — snapshot ssthresh */
+            ca->frozen_ssthresh = tp->snd_ssthresh;
+        }
 		ca->flag |= LP_WITHIN_INF;
-	else
+		tp->snd_ssthresh = max(tp->snd_ssthresh, ca->frozen_ssthresh);
+	} else {
 		ca->flag &= ~LP_WITHIN_INF;
+	}
 
 	/* test if within threshold */
 	if (ca->sowd >> 3 <
@@ -371,8 +380,15 @@ static void tcp_lp_pkts_acked(struct sock *sk, const struct ack_sample *sample)
 
 	/* happened within inference
 	 * drop snd_cwnd into 1 */
-	if (ca->flag & LP_WITHIN_INF)
+	if (ca->flag & LP_WITHIN_INF) {
 		tp->snd_cwnd = max(tp->snd_cwnd - calculate_beta_scaled_value(ca, tp->snd_cwnd), 1U);
+		if (sample->rtt_us > 0) {
+			u64 bw = (u64)sample->pkts_acked * tp->mss_cache * USEC_PER_SEC / sample->rtt_us;
+			sk->sk_pacing_rate = bw * 95 / 100;
+		} else {
+			sk->sk_pacing_rate = 0;
+		}
+	}
 
 	/* record this drop time */
 	ca->last_drop = now;
@@ -445,6 +461,8 @@ static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		}
 
 		tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
+	} else {
+		tcp_reno_cong_avoid(sk, ack, acked);
 	}
 }
 

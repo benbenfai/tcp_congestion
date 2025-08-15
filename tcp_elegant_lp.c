@@ -3,7 +3,6 @@
 #include <linux/jiffies.h>
 #include <linux/math64.h>
 #include <linux/kernel.h>
-#include <linux/hrtimer.h>  /* for NSEC_PER_SEC */
 
 #define ELEGANT_SCALE 6
 #define ELEGANT_UNIT (1 << ELEGANT_SCALE)          // 64
@@ -358,12 +357,16 @@ static void tcp_lp_pkts_acked(struct sock *sk, const struct ack_sample *sample)
 		ca->flag |= LP_WITHIN_INF;
 		tp->snd_ssthresh = max(tp->snd_ssthresh, ca->frozen_ssthresh);
 	} else {
+		if (ca->flag & LP_WITHIN_INF) {
+			/* Just exited inference */
+			ca->frozen_ssthresh = 0;
+		}
 		ca->flag &= ~LP_WITHIN_INF;
 	}
 
 	/* test if within threshold */
 	if (ca->sowd >> 3 <
-	    ca->owd_min + 15 * (ca->owd_max - ca->owd_min) / 100)
+	    ca->owd_min + calculate_beta_scaled_value(ca, 100) * (ca->owd_max - ca->owd_min) / 100)
 		ca->flag |= LP_WITHIN_THR;
 	else
 		ca->flag &= ~LP_WITHIN_THR;
@@ -382,12 +385,6 @@ static void tcp_lp_pkts_acked(struct sock *sk, const struct ack_sample *sample)
 	 * drop snd_cwnd into 1 */
 	if (ca->flag & LP_WITHIN_INF) {
 		tp->snd_cwnd = max(tp->snd_cwnd - calculate_beta_scaled_value(ca, tp->snd_cwnd), 1U);
-		if (sample->rtt_us > 0) {
-			u64 bw = (u64)sample->pkts_acked * tp->mss_cache * USEC_PER_SEC / sample->rtt_us;
-			sk->sk_pacing_rate = bw * 95 / 100;
-		} else {
-			sk->sk_pacing_rate = 0;
-		}
 	}
 
 	/* record this drop time */

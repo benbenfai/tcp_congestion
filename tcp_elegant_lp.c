@@ -219,6 +219,7 @@ static void tcp_elegant_reset(struct sock *sk)
 	ca->rtt_curr = 0;
     ca->cnt_rtt = 0;
 	ca->beta = BETA_BASE;
+	ca->frozen_ssthresh = 0;
 
 }
 
@@ -514,7 +515,7 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 		update_params(sk);
 	}
 
-	if (!ca->lt_is_sampling && rs->losses) {
+	if (!ca->lt_is_sampling && rs->losses > 0) {
 		ca->lt_rtt_cnt = 0;
 		ca->lt_is_sampling = true;
 	}

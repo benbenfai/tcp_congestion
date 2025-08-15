@@ -333,15 +333,15 @@ static void tcp_lp_rtt_sample(struct sock *sk, u32 rtt)
 		ca->sowd = mowd << 3;	/* take the measured time be owd */
 }
 
-static void tcp_lp_pkts_acked(struct sock *sk, const struct ack_sample *sample)
+static void tcp_lp_pkts_acked(struct sock *sk, const struct rate_sample *rs)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 	u32 now = tcp_time_stamp(tp);
 	u32 delta;
 
-	if (sample->rtt_us > 0)
-		tcp_lp_rtt_sample(sk, sample->rtt_us);
+	if (rs->rtt_us > 0)
+		tcp_lp_rtt_sample(sk, rs->rtt_us);
 
 	/* calc inference */
 	delta = now - tp->rx_opt.rcv_tsecr;
@@ -502,6 +502,8 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 	if (unlikely(rs->delivered < 0 || rs->interval_us <= 0))
 		return; /* Not a valid observation */
 
+	tcp_lp_pkts_acked(sk, rs);
+
 	/* See if we've reached the next RTT */
 	if (!before(rs->prior_delivered, ca->next_rtt_delivered)) {
 		ca->next_rtt_delivered = tp->delivered;
@@ -518,6 +520,7 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 	}
 
 	if (rs->is_app_limited) {
+		ca->flag &= ~LP_WITHIN_INF;
 		ca->lt_rtt_cnt = 0;
 		ca->lt_is_sampling = false;
 	}
@@ -568,7 +571,6 @@ static struct tcp_congestion_ops tcp_elegant __read_mostly = {
 	.undo_cwnd		= tcp_elegant_undo_cwnd,
 	.cong_avoid		= tcp_elegant_cong_avoid,
 	.cong_control	= tcp_elegant_cong_control,
-	.pkts_acked 	= tcp_lp_pkts_acked,
 	.set_state		= tcp_elegant_set_state
 };
 

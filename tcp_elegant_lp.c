@@ -340,7 +340,7 @@ static void tcp_lp_pkts_acked(struct sock *sk, const struct rate_sample *rs)
 	u32 now = tcp_time_stamp(tp);
 	u32 delta;
 
-	if (rs->rtt_us > 0)
+	if (rs->rtt_us > 0 && !rs->is_ack_delayed)
 		tcp_lp_rtt_sample(sk, rs->rtt_us);
 
 	/* calc inference */

@@ -341,9 +341,6 @@ static void tcp_lp_pkts_acked(struct sock *sk, const struct rate_sample *rs)
 	u32 now = tcp_time_stamp(tp);
 	u32 delta;
 
-	if (rs->rtt_us > 0 && !rs->is_ack_delayed)
-		tcp_lp_rtt_sample(sk, rs->rtt_us);
-
 	/* calc inference */
 	delta = now - tp->rx_opt.rcv_tsecr;
 	if ((s32)delta > 0)
@@ -500,13 +497,16 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
+	if (rs->rtt_us > 0)
+		tcp_lp_rtt_sample(sk, rs->rtt_us);
+
 	if (unlikely(rs->delivered < 0 || rs->interval_us <= 0))
 		return; /* Not a valid observation */
 
-	tcp_lp_pkts_acked(sk, rs);
-
 	/* See if we've reached the next RTT */
 	if (!before(rs->prior_delivered, ca->next_rtt_delivered)) {
+		if (!rs->is_ack_delayed)
+			tcp_lp_pkts_acked(sk, rs);
 		ca->next_rtt_delivered = tp->delivered;
 		ca->lt_rtt_cnt++;
 		ca->wwf_valid = false;

@@ -467,9 +467,6 @@ static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs
 	struct elegant *ca = inet_csk_ca(sk);
 
 	u32 rtt_us = rs->rtt_us;
-	u32 acked = rs->delivered - rs->prior_delivered;
-	bool first_sample = (ca->cnt_rtt == 0) || (ca->rtt_curr == 0);
-	bool only_sack    = (acked == 0 && rs->acked_sacked > 0);
 
 	/* dup ack, no rtt sample */
 	if (rtt_us < 0)
@@ -478,11 +475,9 @@ static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs
 	if (rtt_us > RTT_MAX)
 		rtt_us = RTT_MAX;
 
-	if (first_sample || (acked > 0 && !only_sack && !rs->is_ack_delayed)) {
-		ca->rtt_curr = rtt_us;
-		++ca->cnt_rtt;
-		ca->sum_rtt += rtt_us;
-	}
+	ca->rtt_curr = rtt_us;
+	++ca->cnt_rtt;
+	ca->sum_rtt += rtt_us;
 
 	ca->base_rtt = min(ca->base_rtt, rtt_us);
 	ca->base_rtt = min(ca->base_rtt_trend, ca->base_rtt);
@@ -496,23 +491,28 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
+	
+	u32 acked = rs->delivered - rs->prior_delivered;
+	bool first_sample = (ca->cnt_rtt == 0) || (ca->rtt_curr == 0);
+	bool only_sack    = (acked == 0 && rs->acked_sacked > 0);
 
-	if (rs->rtt_us > 0)
+	if (rs->rtt_us > 0 && (first_sample || (acked > 0 && !only_sack)))
 		tcp_lp_rtt_sample(sk, rs->rtt_us);
+		tcp_elegant_pkts_acked(sk, rs);
 
 	if (unlikely(rs->delivered < 0 || rs->interval_us <= 0))
 		return; /* Not a valid observation */
 
 	/* See if we've reached the next RTT */
 	if (!before(rs->prior_delivered, ca->next_rtt_delivered)) {
-		if (!rs->is_ack_delayed)
-			tcp_lp_pkts_acked(sk, rs);
 		ca->next_rtt_delivered = tp->delivered;
 		ca->lt_rtt_cnt++;
 		ca->wwf_valid = false;
 		ca->max_rtt_trend = (ca->max_rtt_trend >> 1) + (ca->max_rtt >> 1);
 		ca->base_rtt_trend = (ca->base_rtt_trend >> 1) + (ca->base_rtt >> 1);
-		update_params(sk);
+		if (!rs->is_ack_delayed)
+			tcp_lp_pkts_acked(sk, rs);
+			update_params(sk);
 	}
 
 	if (!ca->lt_is_sampling && rs->losses > 0) {
@@ -536,8 +536,6 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 		ca->base_rtt = ca->base_rtt_trend;
 		ca->last_rtt_reset_jiffies = jiffies;
 	}
-
-	tcp_elegant_pkts_acked(sk, rs);
 
 }
 

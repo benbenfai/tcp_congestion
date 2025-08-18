@@ -475,9 +475,11 @@ static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs
 	if (rtt_us > RTT_MAX)
 		rtt_us = RTT_MAX;
 
-	ca->rtt_curr = rtt_us;
-	++ca->cnt_rtt;
-	ca->sum_rtt += rtt_us;
+	if (!rs->is_ack_delayed) {
+		ca->rtt_curr = rtt_us;
+		++ca->cnt_rtt;
+		ca->sum_rtt += rtt_us;
+	}
 
 	ca->base_rtt = min(ca->base_rtt, rtt_us);
 	ca->base_rtt = min(ca->base_rtt_trend, ca->base_rtt);
@@ -500,7 +502,7 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 		tcp_lp_rtt_sample(sk, rs->rtt_us);
 		tcp_elegant_pkts_acked(sk, rs);
 
-	if (unlikely(rs->delivered < 0 || rs->interval_us <= 0))
+	if (rs->interval_us <= 0 || !rs->acked_sacked)
 		return; /* Not a valid observation */
 
 	/* See if we've reached the next RTT */
@@ -510,7 +512,7 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 		ca->wwf_valid = false;
 		ca->max_rtt_trend = (ca->max_rtt_trend >> 1) + (ca->max_rtt >> 1);
 		ca->base_rtt_trend = (ca->base_rtt_trend >> 1) + (ca->base_rtt >> 1);
-		if (!rs->is_ack_delayed)
+		if (rs->delivered > 0)
 			tcp_lp_pkts_acked(sk, rs);
 			update_params(sk);
 	}
@@ -518,15 +520,11 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 	if (!ca->lt_is_sampling && rs->losses > 0) {
 		ca->lt_rtt_cnt = 0;
 		ca->lt_is_sampling = true;
-	}
-
-	if (rs->is_app_limited) {
+	} else if (rs->is_app_limited) {
 		ca->flag &= ~LP_WITHIN_INF;
 		ca->lt_rtt_cnt = 0;
 		ca->lt_is_sampling = false;
-	}
-
-	if (ca->lt_is_sampling && ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
+	} else if (ca->lt_is_sampling && ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
 		ca->lt_rtt_cnt = 0;
 		ca->lt_is_sampling = false;
 	}
@@ -544,10 +542,6 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 	struct tcp_sock *tp = tcp_sk(sk);
 
 	tcp_elegant_update(sk, rs);
-
-    if (rs->losses > 0) {
-        tp->snd_cwnd = max_t(s32, tp->snd_cwnd - rs->losses, cwnd_min_target);
-    }
 
 }
 

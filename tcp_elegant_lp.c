@@ -521,13 +521,12 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 		ca->max_rtt_trend = (ca->max_rtt_trend >> 1) + (ca->max_rtt >> 1);
 		ca->base_rtt_trend = (ca->base_rtt_trend >> 1) + (ca->base_rtt >> 1);
 		if (rs->delivered > 0) {
-			tcp_lp_pkts_acked(sk, rs);
 			update_params(sk);
 		}
 	}
-	
-	if (rs->is_app_limited)
-		ca->flag &= ~LP_WITHIN_INF;
+
+	if (!rs->is_app_limited)
+		tcp_lp_pkts_acked(sk, rs);
 
 	if (after(tcp_jiffies32, ca->last_rtt_reset_jiffies + BASE_RTT_RESET_INTERVAL) && !rs->is_ack_delayed) {
 		ca->max_rtt = ca->max_rtt_trend;

@@ -146,8 +146,8 @@ static u32 tcp_elegant_ssthresh(struct sock *sk)
 	struct elegant *ca = inet_csk_ca(sk);
 	
 	if (ca->prev_ca_state < TCP_CA_Recovery)
-		ca->prior_cwnd = tp->snd_cwnd;  /* this cwnd is good enough */
-	else  /* loss recovery or BBR_PROBE_RTT have temporarily cut cwnd */
+		ca->prior_cwnd = tp->snd_cwnd;
+	else
 		ca->prior_cwnd = max(ca->prior_cwnd,  tp->snd_cwnd);
 
 	return max(tp->snd_cwnd - calculate_beta_scaled_value(ca, tp->snd_cwnd), 2U);

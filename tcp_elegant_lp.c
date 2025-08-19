@@ -469,7 +469,6 @@ static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 
 static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs)
 {
-	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
 	u32 rtt_us = rs->rtt_us;
@@ -501,8 +500,6 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
-	ca->prev_ca_state = inet_csk(sk)->icsk_ca_state;
-
 	u32 acked = rs->delivered - rs->prior_delivered;
 	bool only_sack    = (acked == 0 && rs->acked_sacked > 0);
 
@@ -510,6 +507,8 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 		tcp_lp_rtt_sample(sk, rs->rtt_us);
 		tcp_elegant_pkts_acked(sk, rs);
 	}
+
+	ca->prev_ca_state = inet_csk(sk)->icsk_ca_state;
 
 	if (rs->interval_us <= 0 || !rs->acked_sacked)
 		return; /* Not a valid observation */
@@ -538,7 +537,6 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 
 static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *rs)
 {
-	struct tcp_sock *tp = tcp_sk(sk);
 
 	tcp_elegant_update(sk, rs);
 

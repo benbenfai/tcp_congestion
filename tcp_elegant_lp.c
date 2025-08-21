@@ -21,8 +21,6 @@
 #define BETA_BASE	BETA_MAX
 #define BETA_SUM   (BETA_SCALE + BETA_MIN + BETA_MAX)
 
-#define BASE_RTT_RESET_INTERVAL (10 * HZ) /* 10 seconds for base_rtt reset */
-
 static const u32 lt_intvl_min_rtts = 4;
 static const u32 cwnd_min_target = 4;
 
@@ -421,13 +419,18 @@ static inline u64 fast_isqrt(u64 x)
     return r;
 }
 
+static inline u32 ema_value(u32 value1, u32 value2)
+{
+	return (13U * value1 + 3U * value2) >> 4;
+}
+
 static inline u32 calc_wwf(const struct tcp_sock *tp, const struct elegant *ca)
 {
 	u32 wwf;
 	u32 inv_beta = BETA_SUM - ca->beta; 
     u32 d        = max(ca->max_rtt,    ca->max_rtt_trend);
     u32 c        = min(ca->base_rtt,   ca->base_rtt_trend);
-    u32 m        = (13U * ca->rtt_curr + 3U * c) >> 4;
+    u32 m        = ema_value(ca->rtt_curr, c);
 
 	u64 numer	 = (u64)tp->snd_cwnd * d << E_UNIT_SQ_SHIFT;
 
@@ -517,8 +520,8 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 	if (!before(rs->prior_delivered, ca->next_rtt_delivered)) {
 		ca->next_rtt_delivered = tp->delivered;
 		ca->wwf_valid = false;
-		ca->max_rtt_trend = (ca->max_rtt_trend >> 1) + (ca->max_rtt >> 1);
-		ca->base_rtt_trend = (ca->base_rtt_trend >> 1) + (ca->base_rtt >> 1);
+		ca->max_rtt_trend = ema_value(ca->max_rtt_trend, ca->max_rtt);
+		ca->base_rtt_trend = ema_value(ca->base_rtt_trend, ca->base_rtt);
 		update_params(sk);
 	}
 

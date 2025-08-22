@@ -132,7 +132,7 @@ static void tcp_elegant_init(struct sock *sk)
     ca->cached_wwf = 0;
     ca->next_rtt_delivered = tp->delivered;
 
-	ca->prior_cwnd = 0;
+	ca->prior_cwnd = tp->prior_cwnd;
 
 }
 
@@ -232,6 +232,7 @@ static void tcp_elegant_reset(struct sock *sk)
 
 static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 {
+	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
 	if (new_state == TCP_CA_Loss) {
@@ -243,6 +244,8 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 		}
 		ca->prev_ca_state = TCP_CA_Loss;
 		ca->wwf_valid = false;
+	}  else if (ca->prev_ca_state == TCP_CA_Loss && new_state != TCP_CA_Loss) {
+		tp->snd_cwnd = max(tp->snd_cwnd, ca->prior_cwnd);
 	}
 }
 

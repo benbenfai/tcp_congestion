@@ -72,9 +72,10 @@ struct elegant {
     u32   max_rtt;               /* max RTT in last round */
 	u32   rtt_curr;              /* current RTT, per-ACK update */
     u32   cnt_rtt:16,            /* samples in this RTT */
-	      lt_rtt_cnt:7,          /* rtt-round counter */
+          round_start:1,	     /* start of packet-timed tx->ack round? */
           lt_is_sampling:1,      /* have we calc’d WWF this RTT? */
-          unused:4,
+	      lt_rtt_cnt:7,          /* rtt-round counter */
+          unused:3,
 		  prev_ca_state:3,
           wwf_valid:1;           /* last CA state */
 
@@ -119,8 +120,9 @@ static void tcp_elegant_init(struct sock *sk)
     ca->max_rtt = 0;
     ca->rtt_curr = 0;
 	ca->cnt_rtt = 0;
-	ca->lt_rtt_cnt = 0;
+	ca->round_start = 0;
 	ca->lt_is_sampling = false;
+	ca->lt_rtt_cnt = 0;
 	ca->prev_ca_state = TCP_CA_Open;
 	ca->wwf_valid = false;
 
@@ -234,9 +236,10 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 
 	if (new_state == TCP_CA_Loss) {
 		tcp_elegant_reset(sk);
+		ca->round_start = 1;
 		if (!ca->lt_is_sampling) {
-			ca->lt_rtt_cnt = 0;
 			ca->lt_is_sampling = true;
+			ca->lt_rtt_cnt = 0;
 		}
 		ca->prev_ca_state = TCP_CA_Loss;
 		ca->wwf_valid = false;
@@ -516,6 +519,7 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 	}
 
 	ca->prev_ca_state = inet_csk(sk)->icsk_ca_state;
+	ca->round_start = 0;
 
 	if (rs->delivered < 0 || rs->interval_us <= 0)
 		return; /* Not a valid observation */
@@ -526,20 +530,27 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 		ca->wwf_valid = false;
 		ca->max_rtt_trend = ema_value(ca->max_rtt_trend, ca->max_rtt);
 		ca->base_rtt_trend = ema_value(ca->base_rtt_trend, ca->base_rtt);
+		ca->round_start = 1;
 		update_params(sk);
 	}
 
-	if (!ca->lt_is_sampling && rs->losses) {
-		ca->lt_rtt_cnt = 0;
-		ca->lt_is_sampling = true;
-	} else if (rs->is_app_limited) {
-		ca->lt_rtt_cnt = 0;
-		ca->lt_is_sampling = false;
-	} else if (ca->lt_is_sampling && ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
-		ca->lt_rtt_cnt = 0;
-		ca->lt_is_sampling = false;
-		ca->max_rtt = ca->max_rtt_trend;
-		ca->base_rtt = ca->base_rtt_trend;
+	if (!ca->lt_is_sampling) {
+		if (rs->losses) {
+			ca->lt_is_sampling = true;
+			ca->lt_rtt_cnt = 0;
+		}
+	} else {
+		if (rs->is_app_limited) {
+			ca->lt_is_sampling = false;
+			ca->lt_rtt_cnt = 0;
+		} else if (ca->round_start) {
+			ca->lt_rtt_cnt++;
+		} else if (ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
+			ca->max_rtt = ca->max_rtt_trend;
+			ca->base_rtt = ca->base_rtt_trend;
+			ca->lt_is_sampling = false;
+			ca->lt_rtt_cnt = 0;
+		}
 	}
 
 	if (!rs->is_app_limited) {
@@ -559,8 +570,8 @@ static u32 tcp_elegant_undo_cwnd(struct sock *sk)
 {
 	struct elegant *ca = inet_csk_ca(sk);
 
-	ca->lt_rtt_cnt = 0;
 	ca->lt_is_sampling = false;
+	ca->lt_rtt_cnt = 0;
 	ca->wwf_valid = false;
 
 	return ca->prior_cwnd;

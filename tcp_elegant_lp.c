@@ -245,8 +245,6 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 
 	if (!ca->lt_is_sampling) {
 		if (rs->losses) {
-			ca->max_rtt = ema_value(ca->max_rtt, ca->max_rtt_trend);
-			ca->base_rtt = ema_value(ca->base_rtt, ca->base_rtt_trend);
 			ca->lt_is_sampling = true;
 			ca->lt_rtt_cnt = 0;
 		}

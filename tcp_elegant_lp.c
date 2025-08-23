@@ -230,12 +230,23 @@ static void tcp_elegant_reset(struct sock *sk)
 
 }
 
-static void lt_bw_sampling(struct sock *sk, const struct rate_sample *rs)
+static inline u32 ema_value(u32 value1, u32 value2)
+{
+	if (value1 == 0) {
+		return value2;
+	}
+
+	return (13U * value1 + 3U * value2) >> 4;
+}
+
+static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 {
 	struct elegant *ca = inet_csk_ca(sk);
 
 	if (!ca->lt_is_sampling) {
 		if (rs->losses) {
+			ca->max_rtt = ema_value(ca->max_rtt, ca->max_rtt_trend);
+			ca->base_rtt = ema_value(ca->base_rtt, ca->base_rtt_trend);
 			ca->lt_is_sampling = true;
 			ca->lt_rtt_cnt = 0;
 		}
@@ -244,10 +255,12 @@ static void lt_bw_sampling(struct sock *sk, const struct rate_sample *rs)
 			ca->lt_is_sampling = false;
 			ca->lt_rtt_cnt = 0;
 		} else if (ca->round_start) {
+			ca->max_rtt = ema_value(ca->max_rtt, ca->max_rtt_trend);
+			ca->base_rtt = ema_value(ca->base_rtt, ca->base_rtt_trend);
 			ca->lt_rtt_cnt++;
 		} else if (ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
-			ca->max_rtt = ca->max_rtt_trend;
-			ca->base_rtt = ca->base_rtt_trend;
+			ca->max_rtt = ema_value(ca->max_rtt_trend, ca->max_rtt);
+			ca->base_rtt = ema_value(ca->base_rtt_trend, ca->base_rtt);
 			ca->lt_is_sampling = false;
 			ca->lt_rtt_cnt = 0;
 		}
@@ -266,7 +279,7 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 		ca->prev_ca_state = TCP_CA_Loss;
 		ca->round_start = 1;
 		ca->wwf_valid = false;
-		lt_bw_sampling(sk, &rs);
+		lt_sampling(sk, &rs);
 	}  else if (ca->prev_ca_state == TCP_CA_Loss && new_state != TCP_CA_Loss) {
 		tp->snd_cwnd = max(tp->snd_cwnd, ca->prior_cwnd);
 	}
@@ -452,11 +465,6 @@ static inline u64 fast_isqrt(u64 x)
     return r;
 }
 
-static inline u32 ema_value(u32 value1, u32 value2)
-{
-	return (13U * value1 + 3U * value2) >> 4;
-}
-
 static inline u32 calc_wwf(const struct tcp_sock *tp, const struct elegant *ca)
 {
 	u32 wwf;
@@ -560,7 +568,7 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 		update_params(sk);
 	}
 
-	lt_bw_sampling(sk, rs);
+	lt_sampling(sk, rs);
 
 	if (!rs->is_app_limited) {
 		tcp_lp_pkts_acked(sk, rs);

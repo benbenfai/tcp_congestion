@@ -250,6 +250,7 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 		}
 	} else {
 		if (rs->is_app_limited) {
+			ca->flag &= ~LP_WITHIN_INF;
 			ca->lt_is_sampling = false;
 			ca->lt_rtt_cnt = 0;
 		} else if (ca->round_start) {

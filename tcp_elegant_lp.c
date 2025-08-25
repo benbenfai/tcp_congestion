@@ -35,6 +35,8 @@ MODULE_PARM_DESC(rtt0, "reference rout trip time (ms)");
 /* resolution of owd */
 #define LP_RESOL       TCP_TS_HZ
 
+static const u32 ema_weights[2] = {13U, 3U}; // For EMA calculation
+
 /**
  * enum tcp_lp_state
  * @LP_VALID_RHZ: is remote HZ valid?
@@ -216,27 +218,28 @@ static void update_params(struct sock *sk)
 	rtt_reset(sk);
 }
 
-static void tcp_elegant_reset(struct sock *sk)
-{
-	struct elegant *ca = inet_csk_ca(sk);
-
-    ca->sum_rtt = 0;
-	ca->base_rtt = U32_MAX;
-	ca->max_rtt = 0;
-	ca->rtt_curr = 0;
-    ca->cnt_rtt = 0;
-	ca->beta = BETA_BASE;
-	ca->frozen_ssthresh = 0;
-
-}
-
 static inline u32 ema_value(u32 value1, u32 value2)
 {
 	if (value1 == 0) {
 		return value2;
 	}
 
-	return (13U * value1 + 3U * value2) >> 4;
+	return (ema_weights[0] * value1 + ema_weights[1] * value2) >> 4;
+}
+
+static void tcp_elegant_reset(struct sock *sk)
+{
+	struct elegant *ca = inet_csk_ca(sk);
+
+    ca->sum_rtt = 0;
+    ca->cnt_rtt = 0;
+	ca->rtt_curr = 0;
+	ca->beta = BETA_BASE;
+	ca->frozen_ssthresh = 0;
+	
+	ca->base_rtt = ema_value(ca->base_rtt, ca->base_rtt_trend);
+    ca->max_rtt = ema_value(ca->max_rtt, ca->max_rtt_trend);
+
 }
 
 static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
@@ -377,12 +380,15 @@ static void tcp_lp_rtt_sample(struct sock *sk, u32 rtt)
 			ca->owd_max = mowd;
 	}
 
-	/* calc for smoothed owd */
-	if (ca->sowd != 0) {
-		mowd -= ca->sowd >> 3;	/* m is now error in owd est */
-		ca->sowd += mowd;	/* owd = 7/8 owd + 1/8 new */
-	} else
-		ca->sowd = mowd << 3;	/* take the measured time be owd */
+    /* Adaptive EMA for OWD */
+    u32 rtt_var = ca->max_rtt - ca->base_rtt;
+    u32 alpha = rtt_var > ca->base_rtt / 2 ? 2 : 3; /* 1/4 weight for high variability, 1/8 for low */
+    if (ca->sowd != 0) {
+        mowd -= ca->sowd >> alpha;
+        ca->sowd += mowd;
+    } else {
+        ca->sowd = mowd << alpha;
+    }
 }
 
 static void tcp_lp_pkts_acked(struct sock *sk, const struct rate_sample *rs)
@@ -394,22 +400,27 @@ static void tcp_lp_pkts_acked(struct sock *sk, const struct rate_sample *rs)
 
 	/* calc inference */
 	delta = now - tp->rx_opt.rcv_tsecr;
-	if ((s32)delta > 0)
-		ca->inference = 3 * delta;
+	if ((s32)delta > 0) {
+        u32 rtt_var = (ca->base_rtt == U32_MAX || ca->max_rtt == 0) ? rtt0 : ca->max_rtt - ca->base_rtt;
+        ca->inference = max(3 * delta, rtt_var / 2);
+        ca->inference = min(ca->inference, 4 * (ca->base_rtt == U32_MAX ? rtt0 : ca->base_rtt));
+	}
 
 	/* test if within inference */
 	if (ca->last_drop && (now - ca->last_drop < ca->inference)) {
 		if (!(ca->flag & LP_WITHIN_INF)) {
             /* Just entered inference — snapshot ssthresh */
             ca->frozen_ssthresh = tp->snd_ssthresh;
+			ca->flag |= LP_WITHIN_INF;
         }
-		ca->flag |= LP_WITHIN_INF;
 		tp->snd_ssthresh = max(tp->snd_ssthresh, ca->frozen_ssthresh);
-	} else {
-		if (ca->flag & LP_WITHIN_INF) {
-			/* Just exited inference */
-			ca->frozen_ssthresh = 0;
-		}
+	} else if (ca->flag & LP_WITHIN_INF) {
+		/* Just exited inference */
+        if (ca->sowd >> 3 < ca->owd_min + (ca->owd_max - ca->owd_min) / 4) {
+            /* If OWD is low, allow slight ssthresh increase */
+            tp->snd_ssthresh = ca->frozen_ssthresh + cwnd_min_target;
+        }
+		ca->frozen_ssthresh = 0;
 		ca->flag &= ~LP_WITHIN_INF;
 	}
 
@@ -434,10 +445,10 @@ static void tcp_lp_pkts_acked(struct sock *sk, const struct rate_sample *rs)
 	 * drop snd_cwnd into 1 */
 	if (ca->flag & LP_WITHIN_INF) {
 		tp->snd_cwnd = max(tp->snd_cwnd - calculate_beta_scaled_value(ca, tp->snd_cwnd), 1U);
+		/* record this drop time */
+		ca->last_drop = now;
 	}
 
-	/* record this drop time */
-	ca->last_drop = now;
 }
 
 static inline u32 hybla_factor(const struct tcp_sock *tp, const struct elegant *ca)
@@ -450,23 +461,21 @@ static inline u32 hybla_factor(const struct tcp_sock *tp, const struct elegant *
 
 static inline u64 fast_isqrt(u64 x)
 {
-    u64 r;
-
     if (x < 2)
         return x;
 
     /* Initial guess: 1 << (floor(log2(x)) / 2) */
-    r = 1ULL << ((fls64(x) - 1) >> 1);
+    u64 r = 1ULL << ((fls64(x) - 1) >> 1);
 
-    /* one Newton iteration */
+    /* two Newton iteration */
     r = (r + x / r) >> 1;
+	r = (r + x / r) >> 1;
 
     return r;
 }
 
 static inline u32 calc_wwf(const struct tcp_sock *tp, const struct elegant *ca)
 {
-	u32 wwf;
 	u32 inv_beta = BETA_SUM - ca->beta; 
     u32 d        = max(ca->max_rtt, ca->max_rtt_trend);
     u32 c        = min(ca->base_rtt, ca->base_rtt_trend);
@@ -476,7 +485,7 @@ static inline u32 calc_wwf(const struct tcp_sock *tp, const struct elegant *ca)
 
 	do_div(numer, m);
 
-    wwf = fast_isqrt(numer) >> ELEGANT_SCALE;
+    u32 wwf = fast_isqrt(numer) >> ELEGANT_SCALE;
 
     return (wwf * inv_beta + (BETA_SCALE >> 1)) >> BETA_SHIFT;
 }

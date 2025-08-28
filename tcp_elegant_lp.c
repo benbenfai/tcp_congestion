@@ -261,6 +261,7 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 			ca->base_rtt = ema_value(ca->base_rtt, ca->base_rtt_trend);
 			ca->lt_rtt_cnt++;
 		} else if (ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
+			ca->flag &= ~LP_WITHIN_INF;
 			ca->max_rtt = ema_value(ca->max_rtt_trend, ca->max_rtt);
 			ca->base_rtt = ema_value(ca->base_rtt_trend, ca->base_rtt);
 			ca->lt_is_sampling = false;
@@ -282,7 +283,7 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 		ca->round_start = 1;
 		ca->wwf_valid = false;
 		lt_sampling(sk, &rs);
-	}  else if (ca->prev_ca_state == TCP_CA_Loss && new_state != TCP_CA_Loss) {
+	} else if (ca->prev_ca_state == TCP_CA_Loss && new_state != TCP_CA_Loss) {
 		tp->snd_cwnd = max(tp->snd_cwnd, ca->prior_cwnd);
 	}
 }

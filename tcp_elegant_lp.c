@@ -166,10 +166,8 @@ static inline u32 max_delay(const struct elegant *ca)
 /* Average queuing delay */
 static inline u32 avg_delay(const struct elegant *ca)
 {
-	u64 t = ca->sum_rtt;
-
-	do_div(t, ca->cnt_rtt);
-	return t - ca->base_rtt;
+	if (ca->cnt_rtt == 0) return 0;
+    return div64_u64(ca->sum_rtt, ca->cnt_rtt) - ca->base_rtt;
 }
 
 static u32 beta(u32 da, u32 dm)
@@ -261,7 +259,6 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 			ca->base_rtt = ema_value(ca->base_rtt, ca->base_rtt_trend);
 			ca->lt_rtt_cnt++;
 		} else if (ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
-			ca->flag &= ~LP_WITHIN_INF;
 			ca->max_rtt = ema_value(ca->max_rtt_trend, ca->max_rtt);
 			ca->base_rtt = ema_value(ca->base_rtt_trend, ca->base_rtt);
 			ca->lt_is_sampling = false;
@@ -419,7 +416,7 @@ static void tcp_lp_pkts_acked(struct sock *sk, const struct rate_sample *rs)
 		/* Just exited inference */
         if (ca->sowd >> 3 < ca->owd_min + (ca->owd_max - ca->owd_min) / 4) {
             /* If OWD is low, allow slight ssthresh increase */
-            tp->snd_ssthresh = ca->frozen_ssthresh + cwnd_min_target;
+            tp->snd_ssthresh = max(ca->frozen_ssthresh, cwnd_min_target);
         }
 		ca->frozen_ssthresh = 0;
 		ca->flag &= ~LP_WITHIN_INF;
@@ -444,7 +441,7 @@ static void tcp_lp_pkts_acked(struct sock *sk, const struct rate_sample *rs)
 
 	/* happened within inference
 	 * drop snd_cwnd into 1 */
-	if (ca->flag & LP_WITHIN_INF) {
+	if (ca->flag & LP_WITHIN_INF && !ca->lt_is_sampling) {
 		tp->snd_cwnd = max(tp->snd_cwnd - calculate_beta_scaled_value(ca, tp->snd_cwnd), 1U);
 		/* record this drop time */
 		ca->last_drop = now;

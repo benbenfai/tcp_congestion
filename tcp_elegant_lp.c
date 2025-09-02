@@ -66,7 +66,6 @@ struct elegant {
 	u32 local_ref_time;
 	u32 last_drop;
 	u32 inference;
-	u32 frozen_ssthresh;
 
 	u64   sum_rtt;               /* sum of RTTs in last round */
 
@@ -114,7 +113,6 @@ static void tcp_elegant_init(struct sock *sk)
 	ca->local_ref_time = 0;
 	ca->last_drop = 0;
 	ca->inference = 0;
-	ca->frozen_ssthresh = 0;
 
 	ca->sum_rtt = 0;
 
@@ -229,7 +227,6 @@ static void tcp_elegant_reset(struct sock *sk)
     ca->cnt_rtt = 0;
 	ca->rtt_curr = 0;
 	ca->beta = BETA_BASE;
-	ca->frozen_ssthresh = 0;
 	
 	ca->base_rtt = ema_value(ca->base_rtt, ca->base_rtt_trend);
     ca->max_rtt = ema_value(ca->max_rtt, ca->max_rtt_trend);
@@ -238,10 +235,13 @@ static void tcp_elegant_reset(struct sock *sk)
 
 static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 {
+	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
 	if (!ca->lt_is_sampling) {
 		if (rs->losses) {
+			ca->last_drop = tcp_time_stamp(tp);
+			ca->flag &= ~LP_WITHIN_INF;
 			ca->lt_is_sampling = true;
 			ca->lt_rtt_cnt = 0;
 		}
@@ -398,26 +398,14 @@ static void tcp_lp_pkts_acked(struct sock *sk, const struct rate_sample *rs)
 	if ((s32)delta > 0) {
 		ca->inference = 3 * delta;
 		base_rtt = ca->base_rtt == U32_MAX ? rtt0 : ca->base_rtt;
-		ca->inference = min(ca->inference, 4 * base_rtt);
+		ca->inference = max(ca->inference, 4 * base_rtt);
 	}
 
 	/* test if within inference */
-	if (ca->last_drop && (now - ca->last_drop < ca->inference)) {
-		if (!(ca->flag & LP_WITHIN_INF)) {
-            /* Just entered inference — snapshot ssthresh */
-            ca->frozen_ssthresh = tp->snd_ssthresh;
-			ca->flag |= LP_WITHIN_INF;
-        }
-		tp->snd_ssthresh = max(tp->snd_ssthresh, ca->frozen_ssthresh);
-	} else if (ca->flag & LP_WITHIN_INF) {
-		/* Just exited inference */
-        if (ca->sowd >> 3 < ca->owd_min + (ca->owd_max - ca->owd_min) / 4) {
-            /* If OWD is low, allow slight ssthresh increase */
-            tp->snd_ssthresh = max(ca->frozen_ssthresh, cwnd_min_target);
-        }
-		ca->frozen_ssthresh = 0;
+	if (ca->last_drop && (now - ca->last_drop < ca->inference))
+		ca->flag |= LP_WITHIN_INF;	
+	else
 		ca->flag &= ~LP_WITHIN_INF;
-	}
 
 	/* test if within threshold */
 	if (ca->sowd >> 3 <
@@ -438,7 +426,7 @@ static void tcp_lp_pkts_acked(struct sock *sk, const struct rate_sample *rs)
 
 	/* happened within inference
 	 * drop snd_cwnd into 1 */
-	if (ca->flag & LP_WITHIN_INF && (now - ca->last_drop > 2 * base_rtt)) {
+	if (ca->flag & LP_WITHIN_INF && !ca->lt_is_sampling && (now - ca->last_drop > 2 * base_rtt)) {
 		/* record this drop time */
 		ca->last_drop = now;
 	}

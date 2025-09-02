@@ -142,6 +142,11 @@ static inline u32 calculate_beta_scaled_value(const struct elegant *ca, u32 valu
 	return (value * ca->beta) >> BETA_SHIFT;
 }
 
+static inline u32 ema_value(u32 value1, u32 value2)
+{
+    return (ema_weights[0] * value1 + ema_weights[1] * value2) >> 3;
+}
+
 static u32 tcp_elegant_ssthresh(struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
@@ -151,6 +156,9 @@ static u32 tcp_elegant_ssthresh(struct sock *sk)
 		ca->prior_cwnd = tp->snd_cwnd;
 	else
 		ca->prior_cwnd = max(ca->prior_cwnd,  tp->snd_cwnd);
+
+	if (ca->flag & LP_WITHIN_INF)
+		return max(tp->snd_cwnd - (tp->snd_cwnd>>3), 2U);
 
 	return max(tp->snd_cwnd - calculate_beta_scaled_value(ca, tp->snd_cwnd), 2U);
 }
@@ -212,11 +220,6 @@ static void update_params(struct sock *sk)
 	}
 
 	rtt_reset(sk);
-}
-
-static inline u32 ema_value(u32 value1, u32 value2)
-{
-    return (ema_weights[0] * value1 + ema_weights[1] * value2) >> 3;
 }
 
 static void tcp_elegant_reset(struct sock *sk)

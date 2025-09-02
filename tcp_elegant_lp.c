@@ -235,19 +235,15 @@ static void tcp_elegant_reset(struct sock *sk)
 
 static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 {
-	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
 	if (!ca->lt_is_sampling) {
 		if (rs->losses) {
-			ca->last_drop = tcp_time_stamp(tp);
-			ca->flag &= ~LP_WITHIN_INF;
 			ca->lt_is_sampling = true;
 			ca->lt_rtt_cnt = 0;
 		}
 	} else {
 		if (rs->is_app_limited) {
-			ca->flag &= ~LP_WITHIN_INF;
 			ca->lt_is_sampling = false;
 			ca->lt_rtt_cnt = 0;
 		} else if (ca->round_start) {
@@ -391,14 +387,11 @@ static void tcp_lp_pkts_acked(struct sock *sk, const struct rate_sample *rs)
 	struct elegant *ca = inet_csk_ca(sk);
 	u32 now = tcp_time_stamp(tp);
 	u32 delta;
-	u32 base_rtt;
 
 	/* calc inference */
 	delta = now - tp->rx_opt.rcv_tsecr;
 	if ((s32)delta > 0) {
 		ca->inference = 3 * delta;
-		base_rtt = ca->base_rtt == U32_MAX ? rtt0 : ca->base_rtt;
-		ca->inference = max(ca->inference, 4 * base_rtt);
 	}
 
 	/* test if within inference */
@@ -426,7 +419,8 @@ static void tcp_lp_pkts_acked(struct sock *sk, const struct rate_sample *rs)
 
 	/* happened within inference
 	 * drop snd_cwnd into 1 */
-	if (ca->flag & LP_WITHIN_INF && !ca->lt_is_sampling && (now - ca->last_drop > 2 * base_rtt)) {
+	if (ca->flag & LP_WITHIN_INF) {
+		ca->wwf_valid  = false;
 		/* record this drop time */
 		ca->last_drop = now;
 	}
@@ -449,8 +443,9 @@ static inline u64 fast_isqrt(u64 x)
     /* Initial guess: 1 << (floor(log2(x)) / 2) */
     u64 r = 1ULL << ((fls64(x) - 1) >> 1);
 
-    /* single Newton iteration */
+    /* two Newton iteration */
     r = (r + x / r) >> 1;
+	r = (r + x / r) >> 1;
 
     return r;
 }

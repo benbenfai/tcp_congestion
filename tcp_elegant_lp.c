@@ -317,6 +317,10 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 			ca->max_rtt = ema_value(ca->max_rtt, ca->max_rtt_trend);
 			ca->base_rtt = ema_value(ca->base_rtt, ca->base_rtt_trend);
 			ca->lt_rtt_cnt++;
+            if (ca->flag & LP_WITHIN_INF) {
+                ca->flag &= ~LP_WITHIN_INF;
+                ca->last_drop = 0;
+            }
 		} else if (ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
 			ca->max_rtt = ema_value(ca->max_rtt_trend, ca->max_rtt);
 			ca->base_rtt = ema_value(ca->base_rtt_trend, ca->base_rtt);
@@ -457,11 +461,12 @@ static void tcp_lp_pkts_acked(struct sock *sk, const struct rate_sample *rs)
 	struct elegant *ca = inet_csk_ca(sk);
 	u32 now = tcp_time_stamp(tp);
 	u32 delta;
+	u32 base_rtt = 2 * ca->base_rtt;
 
 	/* calc inference */
 	delta = now - tp->rx_opt.rcv_tsecr;
 	if ((s32)delta > 0) {
-		ca->inference = 3 * delta;
+		ca->inference = max(3 * delta, base_rtt);
 	}
 
 	/* test if within inference */
@@ -489,7 +494,7 @@ static void tcp_lp_pkts_acked(struct sock *sk, const struct rate_sample *rs)
 
 	/* happened within inference
 	 * drop snd_cwnd into 1 */
-	if (ca->flag & LP_WITHIN_INF && !ca->lt_is_sampling && (now - ca->last_drop > 2 * ca->base_rtt)) {
+	if (ca->flag & LP_WITHIN_INF && !ca->lt_is_sampling && (now - ca->last_drop > base_rtt)) {
 		/* record this drop time */
 		ca->last_drop = now;
 	}

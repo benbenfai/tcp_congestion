@@ -276,6 +276,9 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 		ca->wwf_valid = false;
 		lt_sampling(sk, &rs);
 	} else if (ca->prev_ca_state == TCP_CA_Loss && new_state != TCP_CA_Loss) {
+		ca->last_drop = 0;
+		ca->lt_is_sampling = false;
+        ca->lt_rtt_cnt = 0;
 		tp->snd_cwnd = max(tp->snd_cwnd, ca->prior_cwnd);
 	}
 }
@@ -422,8 +425,7 @@ static void tcp_lp_pkts_acked(struct sock *sk, const struct rate_sample *rs)
 
 	/* happened within inference
 	 * drop snd_cwnd into 1 */
-	if (ca->flag & LP_WITHIN_INF) {
-		ca->wwf_valid  = false;
+	if (ca->flag & LP_WITHIN_INF && !ca->lt_is_sampling && (now - ca->last_drop > 2 * ca->base_rtt)) {
 		/* record this drop time */
 		ca->last_drop = now;
 	}

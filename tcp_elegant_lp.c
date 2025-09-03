@@ -573,7 +573,8 @@ static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	struct elegant *ca = inet_csk_ca(sk);
 	
 	if (!(ca->flag & LP_WITHIN_INF)) {
-
+		tcp_illinois_cong_avoid(sk, ack, acked);
+	} else {
 		u32 wwf;
 
 		if (tcp_in_slow_start(tp)) {
@@ -591,8 +592,6 @@ static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		}
 
 		tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
-	} else {
-		tcp_illinois_cong_avoid(sk, ack, acked);
 	}
 }
 

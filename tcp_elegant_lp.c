@@ -12,13 +12,13 @@
 #define ALPHA_SHIFT	7
 #define ALPHA_SCALE	(1u<<ALPHA_SHIFT)
 #define ALPHA_MIN	((3*ALPHA_SCALE)/10)	/* ~0.3 */
-#define ALPHA_MAX	(10*ALPHA_SCALE)	/* 10.0 */
+#define ALPHA_MAX	(12*ALPHA_SCALE)	/* 10.0 */
 #define ALPHA_BASE	ALPHA_SCALE		/* 1.0 */
 #define RTT_MAX		(U32_MAX / ALPHA_MAX)	/* 3.3 secs */
 
 #define BETA_SHIFT	6
 #define BETA_SCALE	(1u<<BETA_SHIFT)
-#define BETA_MIN	(BETA_SCALE/8)		/* 0.125 */
+#define BETA_MIN	(BETA_SCALE/16)		/* 0.125 */
 #define BETA_MAX	(BETA_SCALE/2)		/* 0.5 */
 #define BETA_BASE	BETA_MAX
 #define BETA_SUM   (BETA_SCALE + BETA_MIN + BETA_MAX)
@@ -80,7 +80,7 @@ struct elegant {
     u32   beta;  				 /* multiplicative decrease factor */
 
     u32   acked:16,
-          rtt_above:8,
+	      rtt_above:8,
           rtt_low:8;
 
     u32   cnt_rtt:16,            /* samples in this RTT */
@@ -252,7 +252,6 @@ static void tcp_elegant_reset(struct sock *sk)
 	ca->rtt_curr = 0;
 	ca->alpha = ALPHA_BASE;
 	ca->beta = BETA_BASE;
-    ca->acked = 0;
 	ca->rtt_low = 0;
 	ca->rtt_above = 0;
 
@@ -409,13 +408,15 @@ static void tcp_lp_rtt_sample(struct sock *sk, u32 rtt)
     }
 }
 
-static void tcp_lp_pkts_acked(struct sock *sk, const struct rate_sample *rs)
+static void tcp_lp_pkts_acked(struct sock *sk, const struct ack_sample *sample)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 	u32 now = tcp_time_stamp(tp);
 	u32 delta;
 	u32 base_rtt = 2 * ca->base_rtt;
+
+	ca->acked = sample->pkts_acked;
 
 	/* calc inference */
 	delta = now - tp->rx_opt.rcv_tsecr;
@@ -463,7 +464,6 @@ static void tcp_illinois_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	/* In slow start */
 	if (tcp_in_slow_start(tp))
 		tcp_slow_start(tp, acked);
-
 	else {
 		u32 delta;
 
@@ -554,8 +554,6 @@ static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs
 	if (rtt_us > RTT_MAX && !(ca->flag & LP_WITHIN_INF))
 		rtt_us = RTT_MAX;
 
-	ca->acked = rs->acked_sacked;
-
 	ca->rtt_curr = rtt_us;
 	ca->sum_rtt += rtt_us;
 	++ca->cnt_rtt;
@@ -589,10 +587,6 @@ static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
 
 	lt_sampling(sk, rs);
 
-	if (!rs->is_app_limited) {
-		tcp_lp_pkts_acked(sk, rs);
-	}
-
 }
 
 static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *rs)
@@ -621,6 +615,7 @@ static struct tcp_congestion_ops tcp_elegant __read_mostly = {
 	.undo_cwnd		= tcp_elegant_undo_cwnd,
 	.cong_avoid		= tcp_elegant_cong_avoid,
 	.cong_control	= tcp_elegant_cong_control,
+	.pkts_acked	    = tcp_lp_pkts_acked,
 	.set_state		= tcp_elegant_set_state
 };
 

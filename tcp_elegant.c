@@ -71,13 +71,12 @@ static inline u32 avg_delay(const struct elegant *ca)
 
 static u32 beta(u32 da, u32 dm)
 {
-	u32 d2, d3;
+	u32 d2 = dm / 10;
+	u32 d3 = (8 * dm) / 10;
 
-	d2 = dm / 10;
 	if (da <= d2)
 		return BETA_MIN;
-
-	d3 = (8 * dm) / 10;
+	
 	if (da >= d3 || d3 <= d2)
 		return BETA_MAX;
 
@@ -151,8 +150,9 @@ static void elastic_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	if (tcp_in_slow_start(tp))
 		tcp_slow_start(tp, acked);
 	else {
-		u64 wwf64 = fast_isqrt(tp->snd_cwnd*ELEGANT_UNIT*ELEGANT_UNIT*ca->rtt_max/ca->rtt_curr);
+		u64 wwf64 = fast_isqrt((u64)tp->snd_cwnd*ELEGANT_UNIT*ELEGANT_UNIT*ca->rtt_max/max(ca->rtt_curr, 1u));
 		u32 wwf = wwf64 >> ELEGANT_SCALE;
+		wwf = max(wwf, 1U);
 		tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 	}
 }
@@ -181,10 +181,10 @@ static void elastic_update_rtt(struct sock *sk, const struct ack_sample *sample)
 	if (ca->base_rtt > rtt_us)
 		ca->base_rtt = rtt_us;
 
-	++ca->cnt_rtt;
+	ca->cnt_rtt++;
 	ca->sum_rtt += rtt_us;
+	ca->rtt_curr = rtt_us;
 
-	ca->rtt_curr = rtt_us + 1;
 	if (ca->rtt_curr > ca->rtt_max) {
 		ca->rtt_max = ca->rtt_curr;
 	}
@@ -193,8 +193,9 @@ static void elastic_update_rtt(struct sock *sk, const struct ack_sample *sample)
 static void elastic_event(struct sock *sk, enum tcp_ca_event event)
 {
 	struct elegant *ca = inet_csk_ca(sk);
+
 	if (event == CA_EVENT_LOSS) {
-		ca->rtt_max = 0;
+		ca->rtt_max = ca->rtt_curr;
 	}
 }
 

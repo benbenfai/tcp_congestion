@@ -154,7 +154,7 @@ static void elastic_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	if (tcp_in_slow_start(tp))
 		tcp_slow_start(tp, acked);
 	else {
-		u64 wwf64 = fast_isqrt((u64)tp->snd_cwnd*ca->rtt_max*ELEGANT_UNIT_SQUARED/(ca->rtt_curr | 1ULL));
+		u64 wwf64 = fast_isqrt((u64)tp->snd_cwnd*ca->rtt_max*ELEGANT_UNIT_SQUARED/ca->rtt_curr);
 		u32 wwf = ((u32)(wwf64 >> ELEGANT_SCALE)) | 1U;
 		tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 	}
@@ -169,7 +169,7 @@ static void elastic_update_rtt(struct sock *sk, const struct rate_sample *rs)
 	if (rtt_us < 0)
 		return;
 
-	ca->rtt_curr = rtt_us;
+	ca->rtt_curr = rtt_us | 1U;
 	if (ca->rtt_curr > ca->rtt_max) {
 		ca->rtt_max = ca->rtt_curr;
 	}
@@ -190,14 +190,15 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 	if (rs->interval_us <= 0 || !rs->acked_sacked)
 		return; /* Not a valid observation */
 
-	ca->prev_ca_state = inet_csk(sk)->icsk_ca_state;
+	elastic_update_rtt(sk, rs);
+
 	/* See if we've reached the next RTT */
 	if (!before(rs->prior_delivered, ca->next_rtt_delivered)) {
 		ca->next_rtt_delivered = tp->delivered;
 		update_params(sk);
 	}
 
-	elastic_update_rtt(sk, rs);
+	ca->prev_ca_state = inet_csk(sk)->icsk_ca_state;
 }
 
 static void elastic_event(struct sock *sk, enum tcp_ca_event event)
@@ -224,9 +225,10 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 
 static u32 tcp_elegant_undo_cwnd(struct sock *sk)
 {
-	struct elegant *ca = inet_csk_ca(sk);
+    struct tcp_sock *tp = tcp_sk(sk);
+    struct elegant *ca = inet_csk_ca(sk);
 
-	return ca->prior_cwnd;
+    return max(tp->snd_cwnd, ca->prior_cwnd);
 }
 
 static struct tcp_congestion_ops tcp_elastic __read_mostly = {

@@ -25,7 +25,9 @@ struct elegant {
     u32 cnt_rtt;            /* samples in this RTT */
 	u32 prior_cwnd;	/* prior cwnd upon entering loss recovery */
 	u32	next_rtt_delivered;
-	u8  prev_ca_state;
+	u32	cache_wwf;
+	u8  prev_ca_state:7,
+	    round_start:1;
 };
 
 static void elastic_init(struct sock *sk)
@@ -41,7 +43,9 @@ static void elastic_init(struct sock *sk)
 	ca->cnt_rtt = 0;
 	ca->prior_cwnd = tp->snd_cwnd;
 	ca->next_rtt_delivered = tp->delivered;
+	ca->cache_wwf = 1U;
 	ca->prev_ca_state = 0;
+	ca->round_start = 0;
 }
 
 static inline u32 calculate_beta_scaled_value(u32 beta, u32 value)
@@ -154,8 +158,14 @@ static void elastic_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	if (tcp_in_slow_start(tp))
 		tcp_slow_start(tp, acked);
 	else {
-		u64 wwf64 = fast_isqrt((u64)tp->snd_cwnd*ca->rtt_max*ELEGANT_UNIT_SQUARED/ca->rtt_curr);
-		u32 wwf = ((u32)(wwf64 >> ELEGANT_SCALE)) | 1U;
+		u32 wwf;
+		if (ca->round_start == 0) {
+			wwf = ca->cache_wwf;
+		} else {
+			u32 rtt = ((ca->rtt_curr*3+ca->base_rtt)>>2) | 1U;
+			u64 wwf64 = fast_isqrt((u64)tp->snd_cwnd*ca->rtt_max*ELEGANT_UNIT_SQUARED/rtt);
+			ca->cache_wwf = wwf = ((u32)(wwf64 >> ELEGANT_SCALE)) | 1U;
+		}
 		tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 	}
 }
@@ -192,10 +202,12 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 
 	elastic_update_rtt(sk, rs);
 
+	ca->round_start = 0;
 	/* See if we've reached the next RTT */
 	if (!before(rs->prior_delivered, ca->next_rtt_delivered)) {
 		ca->next_rtt_delivered = tp->delivered;
 		update_params(sk);
+		ca->round_start = 1;
 	}
 
 	ca->prev_ca_state = inet_csk(sk)->icsk_ca_state;

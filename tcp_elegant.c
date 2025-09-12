@@ -238,7 +238,6 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 
 static u32 tcp_elegant_undo_cwnd(struct sock *sk)
 {
-    struct tcp_sock *tp = tcp_sk(sk);
     struct elegant *ca = inet_csk_ca(sk);
 
     return ca->prior_cwnd;

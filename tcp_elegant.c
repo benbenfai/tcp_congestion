@@ -152,26 +152,22 @@ static void elastic_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
-	u32 wwf;
-
 	if (!tcp_is_cwnd_limited(sk))
 		return;
 
 	if (tcp_in_slow_start(tp)) {
-		wwf = tcp_slow_start(tp, acked);
-		if (!wwf)
-			return;
+		tcp_slow_start(tp, acked);
 	} else {
+		u32 wwf;
 		if (ca->round_start == 0 && ca->cache_wwf > 0) {
 			wwf = ca->cache_wwf;
 		} else {
 			u32 rtt = ((ca->rtt_curr*3+ca->base_rtt)>>2) | 1U;
 			u64 wwf64 = fast_isqrt((u64)tp->snd_cwnd*ca->rtt_max*ELEGANT_UNIT_SQUARED/rtt);
 			ca->cache_wwf = wwf = ((u32)(wwf64 >> ELEGANT_SCALE)) | 1U;
+			tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 		}
 	}
-
-	tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 }
 
 static void elastic_update_rtt(struct sock *sk, const struct rate_sample *rs)

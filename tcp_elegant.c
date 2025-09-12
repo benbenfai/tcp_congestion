@@ -41,10 +41,10 @@ static void elastic_init(struct sock *sk)
 	ca->beta = BETA_BASE;
 	ca->sum_rtt = 0;
 	ca->cnt_rtt = 0;
-	ca->prior_cwnd = tp->snd_cwnd;
+	ca->prior_cwnd = tp->prior_cwnd;
 	ca->next_rtt_delivered = tp->delivered;
 	ca->cache_wwf = 1U;
-	ca->prev_ca_state = 0;
+	ca->prev_ca_state = TCP_CA_Open;
 	ca->round_start = 0;
 }
 
@@ -179,7 +179,7 @@ static void elastic_update_rtt(struct sock *sk, const struct rate_sample *rs)
 	if (rtt_us < 0)
 		return;
 
-	ca->rtt_curr = rtt_us | 1U;
+	ca->rtt_curr = rtt_us;
 	if (ca->rtt_curr > ca->rtt_max) {
 		ca->rtt_max = ca->rtt_curr;
 	}
@@ -204,7 +204,7 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 
 	ca->round_start = 0;
 	/* See if we've reached the next RTT */
-	if (!before(rs->prior_delivered, ca->next_rtt_delivered)) {
+	if (rs->interval_us > 0 && !before(rs->prior_delivered, ca->next_rtt_delivered)) {
 		ca->next_rtt_delivered = tp->delivered;
 		update_params(sk);
 		ca->round_start = 1;
@@ -230,6 +230,7 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 	if (new_state == TCP_CA_Loss) {
 		ca->beta = BETA_BASE;
 		rtt_reset(tp, ca);
+		ca->prev_ca_state = TCP_CA_Loss;
 	} else if (ca->prev_ca_state == TCP_CA_Loss && new_state != TCP_CA_Loss) {
 		tp->snd_cwnd = max(tp->snd_cwnd, ca->prior_cwnd);
 	}
@@ -240,7 +241,7 @@ static u32 tcp_elegant_undo_cwnd(struct sock *sk)
     struct tcp_sock *tp = tcp_sk(sk);
     struct elegant *ca = inet_csk_ca(sk);
 
-    return max(tp->snd_cwnd, ca->prior_cwnd);
+    return ca->prior_cwnd;
 }
 
 static struct tcp_congestion_ops tcp_elastic __read_mostly = {

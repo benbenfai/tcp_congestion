@@ -43,7 +43,7 @@ static void elastic_init(struct sock *sk)
 	ca->cnt_rtt = 0;
 	ca->prior_cwnd = tp->prior_cwnd;
 	ca->next_rtt_delivered = tp->delivered;
-	ca->cache_wwf = 1U;
+	ca->cache_wwf = 0;
 	ca->prev_ca_state = TCP_CA_Open;
 	ca->round_start = 0;
 }
@@ -152,22 +152,26 @@ static void elastic_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
+	u32 wwf;
+
 	if (!tcp_is_cwnd_limited(sk))
 		return;
 
-	if (tcp_in_slow_start(tp))
-		tcp_slow_start(tp, acked);
-	else {
-		u32 wwf;
-		if (ca->round_start == 0) {
+	if (tcp_in_slow_start(tp)) {
+		wwf = tcp_slow_start(tp, acked);
+		if (!wwf)
+			return;
+	} else {
+		if (ca->round_start == 0 && ca->cache_wwf > 0) {
 			wwf = ca->cache_wwf;
 		} else {
 			u32 rtt = ((ca->rtt_curr*3+ca->base_rtt)>>2) | 1U;
 			u64 wwf64 = fast_isqrt((u64)tp->snd_cwnd*ca->rtt_max*ELEGANT_UNIT_SQUARED/rtt);
 			ca->cache_wwf = wwf = ((u32)(wwf64 >> ELEGANT_SCALE)) | 1U;
 		}
-		tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 	}
+
+	tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 }
 
 static void elastic_update_rtt(struct sock *sk, const struct rate_sample *rs)
@@ -230,6 +234,7 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 	if (new_state == TCP_CA_Loss) {
 		ca->beta = BETA_BASE;
 		rtt_reset(tp, ca);
+		ca->cache_wwf = 0;
 		ca->prev_ca_state = TCP_CA_Loss;
 	} else if (ca->prev_ca_state == TCP_CA_Loss && new_state != TCP_CA_Loss) {
 		tp->snd_cwnd = max(tp->snd_cwnd, ca->prior_cwnd);

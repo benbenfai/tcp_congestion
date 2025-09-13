@@ -12,6 +12,8 @@
 #define ELEGANT_UNIT (1 << ELEGANT_SCALE)
 #define ELEGANT_UNIT_SQUARED ((u64)ELEGANT_UNIT * ELEGANT_UNIT)
 
+static int scale __read_mostly = 96U; // 1.5 * BETA_SCALE
+
 static int win_thresh __read_mostly = 20; /* Increased threshold for adaptive alpha/beta */
 module_param(win_thresh, int, 0);
 MODULE_PARM_DESC(win_thresh, "Window threshold for starting adaptive sizing");
@@ -26,11 +28,12 @@ struct elegant {
 	u32 prior_cwnd;	/* prior cwnd upon entering loss recovery */
 	u32	next_rtt_delivered;
 	u32	cache_wwf;
+	u32 inv_beta;
 	u8  prev_ca_state:7,
 	    round_start:1;
 };
 
-static void elastic_init(struct sock *sk)
+static void elegant_init(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
@@ -38,12 +41,13 @@ static void elastic_init(struct sock *sk)
 	ca->rtt_curr = 0;
 	ca->rtt_max = 0;
 	ca->base_rtt = 0x7fffffff;
-	ca->beta = BETA_BASE;
+	ca->beta = BETA_MIN;
 	ca->sum_rtt = 0;
 	ca->cnt_rtt = 0;
 	ca->prior_cwnd = tp->prior_cwnd;
 	ca->next_rtt_delivered = tp->delivered;
 	ca->cache_wwf = 0;
+	ca->inv_beta = scale - BETA_MIN; // 96 - 8 = 88 (1.375)
 	ca->prev_ca_state = TCP_CA_Open;
 	ca->round_start = 0;
 }
@@ -81,32 +85,15 @@ static inline u32 avg_delay(const struct elegant *ca)
     return ca->cnt_rtt ? (ca->sum_rtt / ca->cnt_rtt) - ca->base_rtt : 0;
 }
 
-static u32 beta(u32 da, u32 dm)
-{
-	u32 d2 = dm / 10;
-	u32 d3 = (8 * dm) / 10;
-
-	if (da <= d2)
-		return BETA_MIN;
-
-	if (da >= d3 || d3 <= d2)
-		return BETA_MAX;
-
-	/*
-	 * Based on:
-	 *
-	 *       bmin d3 - bmax d2
-	 * k3 = -------------------
-	 *         d3 - d2
-	 *
-	 *       bmax - bmin
-	 * k4 = -------------
-	 *         d3 - d2
-	 *
-	 * b = k3 + k4 da
-	 */
-	return (BETA_MIN * d3 - BETA_MAX * d2 + (BETA_MAX - BETA_MIN) * da)
-		/ (d3 - d2);
+static u32 beta(u32 da, u32 dm) {
+	if (dm < 100) return BETA_MAX; // Avoid division-by-zero
+    if (da <= dm / 10) return BETA_MIN;
+    if (da >= (8 * dm) / 10 || dm <= dm / 10) return BETA_MAX;
+    // Sigmoid approximation: beta = BETA_MIN + (BETA_MAX - BETA_MIN) / (1 + exp(-k * (da - mid)/dm))
+    u32 mid = dm / 2; // Midpoint at 50% of max delay
+    u32 diff = (da > mid) ? (da - mid) : (mid - da);
+    u32 sigmoid = BETA_SCALE / (1 + (BETA_SCALE / (1 << 10) * diff / (dm / 2))); // k=10, scaled
+    return (BETA_MIN * (BETA_SCALE - sigmoid) + BETA_MAX * sigmoid) >> BETA_SHIFT;
 }
 
 static inline void rtt_reset(struct tcp_sock *tp, struct elegant *ca)
@@ -122,12 +109,17 @@ static void update_params(struct sock *sk)
 
     if (tp->snd_cwnd < win_thresh) {
         ca->beta = BETA_BASE;
+		ca->inv_beta = scale - BETA_BASE; // 96 - 32 = 64 (1.0)
     } else if (ca->cnt_rtt > 0) {
 		u32 dm = max_delay(ca);
 		u32 da = avg_delay(ca);
 
 		ca->beta = beta(da, dm);
-	}
+		ca->inv_beta = scale - ca->beta; // 96 - beta
+	} else {
+        ca->beta = BETA_BASE;
+        ca->inv_beta = scale - BETA_BASE;
+    }
 
 	rtt_reset(tp, ca);
 }
@@ -147,7 +139,7 @@ static inline u64 fast_isqrt(u64 x)
     return r;
 }
 
-static void elastic_cong_avoid(struct sock *sk, u32 ack, u32 acked)
+static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
@@ -164,13 +156,15 @@ static void elastic_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		} else {
 			u32 rtt = ((ca->rtt_curr*3+ca->base_rtt)>>2) | 1U;
 			u64 wwf64 = fast_isqrt((u64)tp->snd_cwnd*ca->rtt_max*ELEGANT_UNIT_SQUARED/rtt);
-			ca->cache_wwf = wwf = ((u32)(wwf64 >> ELEGANT_SCALE)) | 1U;
-			tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
+			wwf = ((u32)(wwf64 >> ELEGANT_SCALE)) | 1U;
+			wwf = (wwf * ca->inv_beta) >> BETA_SHIFT;
+            ca->cache_wwf = wwf;
 		}
+		tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 	}
 }
 
-static void elastic_update_rtt(struct sock *sk, const struct rate_sample *rs)
+static void elegant_update_rtt(struct sock *sk, const struct rate_sample *rs)
 {
 	struct elegant *ca = inet_csk_ca(sk);
 	u32 rtt_us = rs->rtt_us;
@@ -200,7 +194,7 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 	if (rs->interval_us <= 0 || !rs->acked_sacked)
 		return; /* Not a valid observation */
 
-	elastic_update_rtt(sk, rs);
+	elegant_update_rtt(sk, rs);
 
 	ca->round_start = 0;
 	/* See if we've reached the next RTT */
@@ -213,12 +207,13 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 	ca->prev_ca_state = inet_csk(sk)->icsk_ca_state;
 }
 
-static void elastic_event(struct sock *sk, enum tcp_ca_event event)
+static void elegant_event(struct sock *sk, enum tcp_ca_event event)
 {
 	struct elegant *ca = inet_csk_ca(sk);
 
 	if (event == CA_EVENT_LOSS) {
 		ca->rtt_max = ca->rtt_curr;
+		ca->cache_wwf = 0;
 	}
 }
 
@@ -230,7 +225,7 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 	if (new_state == TCP_CA_Loss) {
 		ca->beta = BETA_BASE;
 		rtt_reset(tp, ca);
-		ca->cache_wwf = 0;
+		ca->inv_beta = scale - BETA_BASE;
 		ca->prev_ca_state = TCP_CA_Loss;
 	} else if (ca->prev_ca_state == TCP_CA_Loss && new_state != TCP_CA_Loss) {
 		tp->snd_cwnd = max(tp->snd_cwnd, ca->prior_cwnd);
@@ -244,31 +239,31 @@ static u32 tcp_elegant_undo_cwnd(struct sock *sk)
     return ca->prior_cwnd;
 }
 
-static struct tcp_congestion_ops tcp_elastic __read_mostly = {
+static struct tcp_congestion_ops tcp_elegant __read_mostly = {
 	.name		= "elegant",
 	.owner		= THIS_MODULE,
-	.init		= elastic_init,
+	.init		= elegant_init,
 	.ssthresh	= tcp_elegant_ssthresh,
 	.undo_cwnd	= tcp_elegant_undo_cwnd,
-	.cong_avoid	= elastic_cong_avoid,
+	.cong_avoid	= elegant_cong_avoid,
 	.cong_control	= tcp_elegant_cong_control,
-	.cwnd_event	= elastic_event,
+	.cwnd_event	= elegant_event,
 	.set_state  = tcp_elegant_set_state
 };
 
-static int __init elastic_register(void)
+static int __init elegant_register(void)
 {
 	BUILD_BUG_ON(sizeof(struct elegant) > ICSK_CA_PRIV_SIZE);
-	return tcp_register_congestion_control(&tcp_elastic);
+	return tcp_register_congestion_control(&tcp_elegant);
 }
 
-static void __exit elastic_unregister(void)
+static void __exit elegant_unregister(void)
 {
-	tcp_unregister_congestion_control(&tcp_elastic);
+	tcp_unregister_congestion_control(&tcp_elegant);
 }
 
-module_init(elastic_register);
-module_exit(elastic_unregister);
+module_init(elegant_register);
+module_exit(elegant_unregister);
 
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Elastic TCP");
+MODULE_DESCRIPTION("Elegant TCP");

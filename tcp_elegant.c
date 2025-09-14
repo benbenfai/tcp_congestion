@@ -153,7 +153,7 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		if (ca->round_start == 0 && ca->cache_wwf > 0) {
 			wwf = ca->cache_wwf;
 		} else {
-			u32 rtt = ((ca->rtt_curr*3+ca->base_rtt)>>2) | 1U;
+			u32 rtt = (ca->rtt_curr > ca->base_rtt ? ((ca->rtt_curr*3+ca->base_rtt)>>2) : ca->rtt_curr) | 1U;
 			u64 wwf64 = fast_isqrt((u64)tp->snd_cwnd*ca->rtt_max*ELEGANT_UNIT_SQUARED/rtt);
 			wwf = ((u32)(wwf64 >> ELEGANT_SCALE)) | 1U;
 			wwf = (wwf * ca->inv_beta) >> BETA_SHIFT;
@@ -206,21 +206,13 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 	ca->prev_ca_state = inet_csk(sk)->icsk_ca_state;
 }
 
-static void elegant_event(struct sock *sk, enum tcp_ca_event event)
-{
-	struct elegant *ca = inet_csk_ca(sk);
-
-	if (event == CA_EVENT_LOSS) {
-		ca->rtt_max = ca->rtt_curr;
-	}
-}
-
 static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
 	if (new_state == TCP_CA_Loss) {
+		ca->rtt_max = ca->rtt_curr;
 		ca->beta = BETA_BASE;
 		rtt_reset(tp, ca);
 		ca->cache_wwf = 0;
@@ -246,7 +238,6 @@ static struct tcp_congestion_ops tcp_elegant __read_mostly = {
 	.undo_cwnd	= tcp_elegant_undo_cwnd,
 	.cong_avoid	= elegant_cong_avoid,
 	.cong_control	= tcp_elegant_cong_control,
-	.cwnd_event	= elegant_event,
 	.set_state  = tcp_elegant_set_state
 };
 

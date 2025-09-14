@@ -57,7 +57,6 @@ static inline u32 calculate_beta_scaled_value(u32 beta, u32 value)
     return (value * beta) >> BETA_SHIFT;
 }
 
-
 static u32 tcp_elegant_ssthresh(struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
@@ -213,7 +212,6 @@ static void elegant_event(struct sock *sk, enum tcp_ca_event event)
 
 	if (event == CA_EVENT_LOSS) {
 		ca->rtt_max = ca->rtt_curr;
-		ca->cache_wwf = 0;
 	}
 }
 
@@ -225,6 +223,7 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 	if (new_state == TCP_CA_Loss) {
 		ca->beta = BETA_BASE;
 		rtt_reset(tp, ca);
+		ca->cache_wwf = 0;
 		ca->inv_beta = scale - BETA_BASE;
 		ca->prev_ca_state = TCP_CA_Loss;
 	} else if (ca->prev_ca_state == TCP_CA_Loss && new_state != TCP_CA_Loss) {

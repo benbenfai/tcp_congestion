@@ -155,8 +155,8 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		} else {
 			u32 rtt = (ca->rtt_curr > ca->base_rtt ? ((ca->rtt_curr*3+ca->base_rtt)>>2) : ca->rtt_curr) | 1U;
 			u64 wwf64 = fast_isqrt((u64)tp->snd_cwnd*ca->rtt_max*ELEGANT_UNIT_SQUARED/rtt);
-			wwf = ((u32)(wwf64 >> ELEGANT_SCALE)) | 1U;
-			wwf = (wwf * ca->inv_beta) >> BETA_SHIFT;
+			wwf = (u32)(wwf64 >> ELEGANT_SCALE);
+			wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT) | 1U;
             ca->cache_wwf = wwf;
 		}
 		tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);

@@ -115,10 +115,7 @@ static void update_params(struct sock *sk)
 
 		ca->beta = beta(da, dm);
 		ca->inv_beta = scale - ca->beta; // 96 - beta
-	} else {
-        ca->beta = BETA_BASE;
-        ca->inv_beta = scale - BETA_BASE;
-    }
+	}
 
 	rtt_reset(tp, ca);
 }

@@ -84,15 +84,45 @@ static inline u32 avg_delay(const struct elegant *ca)
     return ca->cnt_rtt ? (ca->sum_rtt / ca->cnt_rtt) - ca->base_rtt : 0;
 }
 
-static u32 beta(u32 da, u32 dm) {
-	if (dm < 100) return BETA_MAX; // Avoid division-by-zero
-    if (da <= dm / 10) return BETA_MIN;
-    if (da >= (8 * dm) / 10 || dm <= dm / 10) return BETA_MAX;
-    // Sigmoid approximation: beta = BETA_MIN + (BETA_MAX - BETA_MIN) / (1 + exp(-k * (da - mid)/dm))
-    u32 mid = dm / 2; // Midpoint at 50% of max delay
-    u32 diff = (da > mid) ? (da - mid) : (mid - da);
-    u32 sigmoid = BETA_SCALE / (1 + (BETA_SCALE / (1 << 10) * diff / (dm / 2))); // k=10, scaled
-    return (BETA_MIN * (BETA_SCALE - sigmoid) + BETA_MAX * sigmoid) >> BETA_SHIFT;
+/*
+ * Beta used for multiplicative decrease.
+ * For small window sizes returns same value as Reno (0.5)
+ *
+ * If delay is small (10% of max) then beta = 1/8
+ * If delay is up to 80% of max then beta = 1/2
+ * In between is a linear function
+ */
+static u32 beta(u32 da, u32 dm)
+{
+	u32 d2, d3;
+	
+	if (dm < 100 || dm == 0)
+        return BETA_MAX;
+
+	d2 = dm / 10;
+	d3 = 8 * d2;
+	if (da <= d2)
+		return BETA_MIN;
+
+	
+	if (da >= d3)
+		return BETA_MAX;
+
+	/*
+	 * Based on:
+	 *
+	 *       bmin d3 - bmax d2
+	 * k3 = -------------------
+	 *         d3 - d2
+	 *
+	 *       bmax - bmin
+	 * k4 = -------------
+	 *         d3 - d2
+	 *
+	 * b = k3 + k4 da
+	 */
+	return (BETA_MIN * d3 - BETA_MAX * d2 + (BETA_MAX - BETA_MIN) * da)
+		/ (d3 - d2);
 }
 
 static inline void rtt_reset(struct tcp_sock *tp, struct elegant *ca)
@@ -146,10 +176,8 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	if (tcp_in_slow_start(tp)) {
 		tcp_slow_start(tp, acked);
 	} else {
-		u32 wwf;
-		if (ca->round_start == 0 && ca->cache_wwf > 0) {
-			wwf = ca->cache_wwf;
-		} else {
+		u32 wwf = ca->cache_wwf;
+		if (ca->round_start || wwf == 0) {
 			u32 rtt = (ca->rtt_curr > ca->base_rtt ? ((ca->rtt_curr*3+ca->base_rtt)>>2) : ca->rtt_curr) | 1U;
 			u64 wwf64 = fast_isqrt((u64)tp->snd_cwnd*ca->rtt_max*ELEGANT_UNIT_SQUARED/rtt);
 			wwf = (u32)(wwf64 >> ELEGANT_SCALE);

@@ -216,10 +216,13 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
-	if (rs->interval_us <= 0 || !rs->acked_sacked)
-		return; /* Not a valid observation */
+	if (!rs->acked_sacked)
+		return;
 
 	elegant_update_rtt(sk, rs);
+
+	if (rs->interval_us <= 0)
+		return; /* Not a valid observation */
 
 	ca->round_start = 0;
 	/* See if we've reached the next RTT */
@@ -252,6 +255,8 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 static u32 tcp_elegant_undo_cwnd(struct sock *sk)
 {
     struct elegant *ca = inet_csk_ca(sk);
+
+	ca->cache_wwf = 0;
 
     return ca->prior_cwnd;
 }

@@ -215,13 +215,11 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
+	
+	if (ca->cnt_rtt == 0 || rs->delivered > rs->prior_delivered)
+		elegant_update_rtt(sk, rs);
 
-	if (!rs->acked_sacked)
-		return;
-
-	elegant_update_rtt(sk, rs);
-
-	if (rs->interval_us <= 0)
+	if (rs->interval_us <= 0 || !rs->acked_sacked)
 		return; /* Not a valid observation */
 
 	ca->round_start = 0;

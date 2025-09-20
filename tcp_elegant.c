@@ -1,6 +1,7 @@
 #include <linux/module.h>
 #include <net/tcp.h>
 #include <linux/bitops.h>
+#include <linux/math64.h>
 
 #define BETA_SHIFT	6
 #define BETA_SCALE	(1u<<BETA_SHIFT)
@@ -14,7 +15,7 @@
 
 static int scale __read_mostly = 96U; // 1.5 * BETA_SCALE
 
-static int win_thresh __read_mostly = 20; /* Increased threshold for adaptive alpha/beta */
+static int win_thresh __read_mostly = 24; /* Increased threshold for adaptive alpha/beta */
 module_param(win_thresh, int, 0);
 MODULE_PARM_DESC(win_thresh, "Window threshold for starting adaptive sizing");
 
@@ -178,8 +179,7 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	} else {
 		u32 wwf = ca->cache_wwf;
 		if (ca->round_start || wwf == 0) {
-			u32 rtt = (ca->rtt_curr > ca->base_rtt ? ((ca->rtt_curr*3+ca->base_rtt)>>2) : ca->rtt_curr) | 1U;
-			u64 wwf64 = fast_isqrt((u64)tp->snd_cwnd*ca->rtt_max*ELEGANT_UNIT_SQUARED/rtt);
+			u64 wwf64 = int_sqrt64((u64)tp->snd_cwnd*ca->rtt_max*ELEGANT_UNIT_SQUARED/(ca->rtt_curr | 1U));
 			wwf = (u32)(wwf64 >> ELEGANT_SCALE);
 			wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT) | 1U;
             ca->cache_wwf = wwf;

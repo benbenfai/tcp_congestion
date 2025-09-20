@@ -184,6 +184,7 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 			wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT) | 1U;
             ca->cache_wwf = wwf;
 		}
+		wwf = max(wwf, acked);
 		tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 	}
 }

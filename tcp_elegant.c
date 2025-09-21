@@ -174,10 +174,13 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	if (!tcp_is_cwnd_limited(sk))
 		return;
 
+	u32 wwf;
 	if (tcp_in_slow_start(tp)) {
-		tcp_slow_start(tp, acked);
+		wwf = tcp_slow_start(tp, acked);
+		if (!wwf)
+			return;
 	} else {
-		u32 wwf = ca->cache_wwf;
+		wwf = ca->cache_wwf;
 		if (ca->round_start || wwf == 0) {
 			u64 wwf64 = int_sqrt64((u64)tp->snd_cwnd*ca->rtt_max*ELEGANT_UNIT_SQUARED/(ca->rtt_curr | 1U));
 			wwf = (u32)(wwf64 >> ELEGANT_SCALE);
@@ -185,8 +188,8 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
             ca->cache_wwf = wwf;
 		}
 		wwf = max(wwf, acked);
-		tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 	}
+	tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 }
 
 static void elegant_update_rtt(struct sock *sk, const struct rate_sample *rs)

@@ -11,7 +11,7 @@
 
 #define ELEGANT_SCALE 6
 #define ELEGANT_UNIT (1 << ELEGANT_SCALE)
-#define ELEGANT_UNIT_SQUARED ((u64)ELEGANT_UNIT * ELEGANT_UNIT)
+#define ELEGANT_UNIT_SQUARED (1ULL << (2 * ELEGANT_SCALE))
 
 static int scale __read_mostly = 96U; // 1.5 * BETA_SCALE
 
@@ -85,27 +85,15 @@ static inline u32 avg_delay(const struct elegant *ca)
     return ca->cnt_rtt ? (ca->sum_rtt / ca->cnt_rtt) - ca->base_rtt : 0;
 }
 
-/*
- * Beta used for multiplicative decrease.
- * For small window sizes returns same value as Reno (0.5)
- *
- * If delay is small (10% of max) then beta = 1/8
- * If delay is up to 80% of max then beta = 1/2
- * In between is a linear function
- */
 static u32 beta(u32 da, u32 dm)
 {
 	u32 d2, d3;
-	
-	if (dm < 100 || dm == 0)
-        return BETA_MAX;
 
 	d2 = dm / 10;
-	d3 = 8 * d2;
 	if (da <= d2)
 		return BETA_MIN;
 
-	
+	d3 = 8 * d2;
 	if (da >= d3)
 		return BETA_MAX;
 
@@ -182,10 +170,9 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	} else {
 		wwf = ca->cache_wwf;
 		if (ca->round_start || wwf == 0) {
-			u64 wwf64 = int_sqrt64((u64)tp->snd_cwnd*ca->rtt_max*ELEGANT_UNIT_SQUARED/(ca->rtt_curr | 1U));
+			u64 wwf64 = int_sqrt64(((u64)tp->snd_cwnd * ca->rtt_max <<ELEGANT_UNIT_SQUARED)/(ca->rtt_curr | 1U));
 			wwf = (u32)(wwf64 >> ELEGANT_SCALE);
-			wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT) | 1U;
-            ca->cache_wwf = wwf;
+			ca->cache_wwf = wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT) | 1U;
 		}
 		wwf = max(wwf, acked);
 	}

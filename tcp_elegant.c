@@ -11,6 +11,7 @@
 
 #define ELEGANT_SCALE 6
 #define ELEGANT_UNIT (1 << ELEGANT_SCALE)
+#define ELEGANT_UNIT_SQ_SHIFT (2 * ELEGANT_SCALE)        // 12
 #define ELEGANT_UNIT_SQUARED (1ULL << (2 * ELEGANT_SCALE))
 
 static int scale __read_mostly = 96U; // 1.5 * BETA_SCALE
@@ -170,7 +171,7 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	} else {
 		wwf = ca->cache_wwf;
 		if (ca->round_start || wwf == 0) {
-			u64 wwf64 = int_sqrt64(((u64)tp->snd_cwnd * ca->rtt_max <<ELEGANT_UNIT_SQUARED)/(ca->rtt_curr | 1U));
+			u64 wwf64 = int_sqrt64(((u64)tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT)/(ca->rtt_curr | 1U));
 			wwf = (u32)(wwf64 >> ELEGANT_SCALE);
 			ca->cache_wwf = wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT) | 1U;
 		}

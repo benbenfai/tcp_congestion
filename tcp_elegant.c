@@ -94,7 +94,7 @@ static u32 beta(u32 da, u32 dm)
 	if (da <= d2)
 		return BETA_MIN;
 
-	d3 = 8 * d2;
+	d3 = 3 << d2;
 	if (da >= d3)
 		return BETA_MAX;
 
@@ -140,19 +140,8 @@ static void update_params(struct sock *sk)
 	rtt_reset(tp, ca);
 }
 
-static inline u64 fast_isqrt(u64 x)
-{
-    if (x < 2)
-        return x;
-
-    /* Initial guess: 1 << (floor(log2(x)) / 2) */
-    u64 r = 1ULL << ((fls64(x) - 1) >> 1);
-
-    /* two Newton iteration */
-    r = (r + x / r) >> 1;
-	r = (r + x / r) >> 1;
-
-    return r;
+static inline u32 ema_value(u32 old, u32 new) {
+    return (old * 7 + new) >> 3;
 }
 
 static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
@@ -171,9 +160,10 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	} else {
 		wwf = ca->cache_wwf;
 		if (ca->round_start || wwf == 0) {
-			u64 wwf64 = int_sqrt64(((u64)tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT)/(ca->rtt_curr | 1U));
+			u32 rtt = ema_value(ca->rtt_curr, ca->base_rtt) | 1U;
+			u64 wwf64 = int_sqrt64(((u64)tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT)/rtt);
 			wwf = (u32)(wwf64 >> ELEGANT_SCALE);
-			ca->cache_wwf = wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT) | 1U;
+			ca->cache_wwf = wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT);
 		}
 		wwf = max(wwf, acked);
 	}

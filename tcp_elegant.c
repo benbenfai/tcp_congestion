@@ -160,10 +160,12 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	} else {
 		wwf = ca->cache_wwf;
 		if (ca->round_start || wwf == 0) {
-			u32 rtt = ema_value(ca->rtt_curr, ca->base_rtt) | 1U;
-			u64 wwf64 = int_sqrt64(((u64)tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT)/rtt);
-			wwf = (u32)(wwf64 >> ELEGANT_SCALE);
-			ca->cache_wwf = wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT);
+			u32 rtt = ema_value(ca->rtt_curr, ca->base_rtt);
+			if (rtt > 0) {
+				u64 wwf64 = int_sqrt64(((u64)tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT)/rtt);
+				wwf = (u32)(wwf64 >> ELEGANT_SCALE);
+				ca->cache_wwf = wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT);
+			}
 		}
 		wwf = max(wwf, acked);
 	}

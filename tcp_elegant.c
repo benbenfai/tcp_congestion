@@ -177,7 +177,7 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 			if (rtt > 0) {
 				u64 wwf64 = int_sqrt64(((u64)tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT)/rtt);
 				wwf = (u32)(wwf64 >> ELEGANT_SCALE);
-				if ((ca->lt_is_sampling && ca->loss_cnt > 1) || ca->beta_lock) {
+				if ((ca->lt_is_sampling && ca->loss_cnt > 2) || ca->beta_lock) {
 					wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT);
 				} else {
 					wwf = ((wwf * max_scale) >> BETA_SHIFT);

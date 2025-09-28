@@ -29,18 +29,19 @@ struct elegant {
 	u32 beta;  				 /* multiplicative decrease factor */
 	u64 sum_rtt;               /* sum of RTTs in last round */
     u32 cnt_rtt;            /* samples in this RTT */
-	u32 prior_cwnd;	/* prior cwnd upon entering loss recovery */
-	u32	next_rtt_delivered;
-	u32	cache_wwf;
-	u32 inv_beta;
-	u32 prev_ca_state:3,
-		round_start:1,
+    u32 round_start:1,
 	    lt_is_sampling:1,      /* have we calc’d WWF this RTT? */
 		lt_rtt_cnt:7,          /* rtt-round counter */
+		had_loss_this_rtt:1,
 		loss_cnt:7,
 		beta_lock:1,
 		beta_lock_cnt:7,
-		unused:5;
+		prev_ca_state:3,
+		unused:4;
+	u32	cache_wwf;
+	u32 inv_beta;
+	u32 prior_cwnd;	/* prior cwnd upon entering loss recovery */
+	u32	next_rtt_delivered;
 };
 
 static void elegant_init(struct sock *sk)
@@ -54,17 +55,18 @@ static void elegant_init(struct sock *sk)
 	ca->beta = BETA_MIN;
 	ca->sum_rtt = 0;
 	ca->cnt_rtt = 0;
-	ca->prior_cwnd = tp->prior_cwnd;
-	ca->next_rtt_delivered = tp->delivered;
-	ca->cache_wwf = 0;
-	ca->inv_beta = max_scale; // 96 - 8 = 88 (1.375)
-	ca->prev_ca_state = TCP_CA_Open;
 	ca->round_start = 0;
 	ca->lt_is_sampling = 0;
 	ca->lt_rtt_cnt = 0;
+	ca->had_loss_this_rtt = 0;	
 	ca->loss_cnt = 0;
 	ca->beta_lock = 0;
 	ca->beta_lock_cnt = 0;
+	ca->prev_ca_state = TCP_CA_Open;
+	ca->cache_wwf = 0;
+	ca->inv_beta = max_scale; // 96 - 8 = 88 (1.375)
+	ca->prior_cwnd = tp->prior_cwnd;
+	ca->next_rtt_delivered = tp->delivered;
 }
 
 static inline u32 calculate_beta_scaled_value(u32 beta, u32 value)
@@ -193,12 +195,14 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 {
 	struct elegant *ca = inet_csk_ca(sk);
+	bool delay_spike = (ema_value(avg_delay(ca), ca->rtt_curr) > 2 * ca->base_rtt);
 
 	if (!ca->lt_is_sampling) {
-		if (rs->losses) {
+		if (rs->losses || delay_spike) {
 			ca->lt_is_sampling = true;
 			ca->lt_rtt_cnt = 0;
-			ca->loss_cnt++;
+			ca->had_loss_this_rtt = 0;
+			if (rs->losses) ca->loss_cnt++;
 		} else if (ca->round_start && ca->beta_lock == 1 && ca->beta_lock_cnt >= 2) {
 			ca->beta_lock = 0;
 			ca->beta_lock_cnt = 0;
@@ -211,14 +215,21 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 		if (rs->is_app_limited) {
 			ca->lt_is_sampling = false;
 			ca->lt_rtt_cnt = 0;
-		} else if (ca->round_start) {
-			ca->lt_rtt_cnt++;
-			if (rs->losses)
+			ca->had_loss_this_rtt = 0;
+		} else {
+			if (rs->losses && !ca->had_loss_this_rtt) {
 				ca->loss_cnt++;
-		} else if (ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
-			ca->lt_is_sampling = false;
-			ca->lt_rtt_cnt = 0;
-			ca->beta_lock = 1;
+				ca->had_loss_this_rtt = 1;
+			}
+			if (ca->round_start) {
+				ca->lt_rtt_cnt++;
+				ca->had_loss_this_rtt = 0;	
+			} else if (ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
+				ca->lt_is_sampling = false;
+				ca->lt_rtt_cnt = 0;
+				ca->beta_lock = 1;
+				ca->had_loss_this_rtt = 0;
+			}
 		}
 	}
 }
@@ -265,9 +276,9 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 		ca->round_start = 1;
 	}
 
-	ca->prev_ca_state = inet_csk(sk)->icsk_ca_state;
-
 	lt_sampling(sk, rs);
+
+	ca->prev_ca_state = inet_csk(sk)->icsk_ca_state;
 }
 
 static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
@@ -281,12 +292,13 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 		ca->rtt_max = ca->rtt_curr;
 		ca->beta = BETA_BASE;
 		rtt_reset(tp, ca);
-		ca->cache_wwf = 0;
 		lt_sampling(sk, &rs);
+		ca->cache_wwf = 0;
 		ca->inv_beta = scale - BETA_BASE;
 		ca->prev_ca_state = TCP_CA_Loss;
 	} else if (ca->prev_ca_state == TCP_CA_Loss && new_state != TCP_CA_Loss) {
 		ca->lt_is_sampling = false;
+		ca->had_loss_this_rtt = 0;
 		tp->snd_cwnd = max(tp->snd_cwnd, ca->prior_cwnd);
 	}
 }
@@ -295,9 +307,10 @@ static u32 tcp_elegant_undo_cwnd(struct sock *sk)
 {
     struct elegant *ca = inet_csk_ca(sk);
 
-	ca->cache_wwf = 0;
 	ca->lt_is_sampling = false;
-
+	ca->had_loss_this_rtt = 0;
+	ca->cache_wwf = 0;
+	
     return ca->prior_cwnd;
 }
 

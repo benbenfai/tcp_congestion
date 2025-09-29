@@ -195,7 +195,9 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 {
 	struct elegant *ca = inet_csk_ca(sk);
-	bool delay_spike = (ema_value(avg_delay(ca), ca->rtt_curr) > 2 * ca->base_rtt);
+	u32 smoothed = ema_value(avg_delay(ca), ca->rtt_curr);
+    bool delay_spike = (smoothed > 2 * ca->base_rtt) &&
+                       (smoothed / ca->base_rtt > ca->rtt_max / ca->base_rtt);  // min/max ratio
 
 	if (!ca->lt_is_sampling) {
 		if (rs->losses || delay_spike) {
@@ -206,7 +208,7 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 		} else if (ca->round_start && ca->beta_lock == 1 && ca->beta_lock_cnt >= 2) {
 			ca->beta_lock = 0;
 			ca->beta_lock_cnt = 0;
-		} else if (ca->round_start && ca->beta_lock == 1) {
+		} else if (ca->round_start && ca->beta_lock == 1 && !delay_spike) {
 			ca->beta_lock_cnt++;
 		} else {
 			ca->loss_cnt = 0;

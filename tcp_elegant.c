@@ -179,7 +179,8 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 			if (rtt > 0) {
 				u64 wwf64 = int_sqrt64(((u64)tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT)/rtt);
 				wwf = (u32)(wwf64 >> ELEGANT_SCALE);
-				if ((ca->lt_is_sampling && ca->loss_cnt > 2) || ca->beta_lock) {
+				u32 loss_rate = ca->lt_rtt_cnt ? (ca->loss_cnt * 100) / ca->lt_rtt_cnt : 0;
+				if ((ca->lt_is_sampling && loss_rate > 20) || ca->beta_lock) {
 					wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT);
 				} else {
 					wwf = ((wwf * max_scale) >> BETA_SHIFT);
@@ -196,6 +197,7 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 {
 	struct elegant *ca = inet_csk_ca(sk);
 	u32 smoothed = ema_value(avg_delay(ca), ca->rtt_curr);
+	u32 reset_thresh = 2 + (avg_delay(ca) / ca->base_rtt);  // Higher thresh in high delay
     bool delay_spike = (smoothed > 2 * ca->base_rtt) &&
                        (smoothed / ca->base_rtt > ca->rtt_max / ca->base_rtt);  // min/max ratio
 
@@ -205,7 +207,7 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 			ca->lt_rtt_cnt = 0;
 			ca->had_loss_this_rtt = 0;
 			if (rs->losses) ca->loss_cnt++;
-		} else if (ca->round_start && ca->beta_lock == 1 && ca->beta_lock_cnt >= 2) {
+		} else if (ca->round_start && ca->beta_lock == 1 && ca->beta_lock_cnt >= reset_thresh) {
 			ca->beta_lock = 0;
 			ca->beta_lock_cnt = 0;
 		} else if (ca->round_start && ca->beta_lock == 1 && !delay_spike) {

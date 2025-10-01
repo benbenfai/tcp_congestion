@@ -155,8 +155,9 @@ static void update_params(struct sock *sk)
 	rtt_reset(tp, ca);
 }
 
-static inline u32 ema_value(u32 old, u32 new) {
-    return (old * 7 + new) >> 3;
+static inline u32 ema_value(u32 old, u32 new, u32 alpha_shift) {
+	//(e.g., shift=3 for 1/8)
+    return (old * ((1<<alpha_shift)-1) + new) >> alpha_shift;
 }
 
 static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
@@ -175,7 +176,7 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	} else {
 		wwf = ca->cache_wwf;
 		if (ca->round_start || wwf == 0) {
-			u32 rtt = ema_value(ca->rtt_curr, ca->base_rtt);
+			u32 rtt = ema_value(ca->rtt_curr, ca->base_rtt, 3);
 			if (rtt > 0) {
 				u32 loss_rate = ca->lt_rtt_cnt ? (ca->loss_cnt * 100) / ca->lt_rtt_cnt : 0;
 				u64 wwf64 = int_sqrt64(((u64)tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT)/rtt);
@@ -196,7 +197,7 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 {
 	struct elegant *ca = inet_csk_ca(sk);
-	u32 smoothed = ema_value(avg_delay(ca), ca->rtt_curr);
+	u32 smoothed = ema_value(avg_delay(ca), ca->rtt_curr, 2);
 	u32 reset_thresh = 2 + (avg_delay(ca) / ca->base_rtt);  // Higher thresh in high delay
     bool delay_spike = (smoothed > 2 * ca->base_rtt) &&
                        (smoothed / ca->base_rtt > ca->rtt_max / ca->base_rtt);  // min/max ratio
@@ -213,7 +214,7 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 		} else if (ca->round_start && ca->beta_lock == 1 && !delay_spike) {
 			ca->beta_lock_cnt++;
 		} else {
-			ca->loss_cnt = 0;
+			ca->loss_cnt = ema_value(ca->loss_cnt, 0, 3);
 		}
 	} else {
 		if (rs->is_app_limited) {
@@ -294,11 +295,11 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 		struct rate_sample rs = { .losses = 1 };
 
 		ca->rtt_max = ca->rtt_curr;
-		ca->beta = BETA_BASE;
+		ca->beta = ema_value(ca->beta, BETA_BASE, 1);
 		rtt_reset(tp, ca);
 		lt_sampling(sk, &rs);
 		ca->cache_wwf = 0;
-		ca->inv_beta = scale - BETA_BASE;
+		ca->inv_beta = scale - ca->beta;
 		ca->prev_ca_state = TCP_CA_Loss;
 	} else if (ca->prev_ca_state == TCP_CA_Loss && new_state != TCP_CA_Loss) {
 		ca->lt_is_sampling = false;

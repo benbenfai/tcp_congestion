@@ -203,15 +203,16 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
                        (smoothed / ca->base_rtt > ca->rtt_max / ca->base_rtt);  // min/max ratio
 
 	if (!ca->lt_is_sampling) {
+		if (ca->beta_lock == 1 && ca->beta_lock_cnt >= reset_thresh) {
+			ca->beta_lock = 0;
+			ca->beta_lock_cnt = 0;
+		}
 		if (rs->losses || delay_spike) {
 			ca->lt_is_sampling = true;
 			ca->lt_rtt_cnt = 0;
 			ca->had_loss_this_rtt = 0;
 			if (rs->losses) ca->loss_cnt++;
-		} else if (ca->round_start && ca->beta_lock == 1 && ca->beta_lock_cnt >= reset_thresh) {
-			ca->beta_lock = 0;
-			ca->beta_lock_cnt = 0;
-		} else if (ca->round_start && ca->beta_lock == 1 && !delay_spike) {
+		} else if (ca->round_start && ca->beta_lock == 1 && smoothed < 1.25 * ca->base_rtt) {
 			ca->beta_lock_cnt++;
 		} else {
 			ca->loss_cnt = ema_value(ca->loss_cnt, 0, 3);

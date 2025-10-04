@@ -203,12 +203,12 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 	u32 avg_delay_val = avg_delay(ca);
 	u32 smoothed = ema_value(avg_delay_val, ca->rtt_curr, 2);
 	u32 reset_thresh = 2 + (avg_delay_val / ca->base_rtt);  // Higher thresh in high delay
+	ca->thresh = 10 + (avg_delay_val / ca->base_rtt) * 5;
     bool delay_spike = (smoothed > 2 * ca->base_rtt) &&
                        (smoothed / ca->base_rtt > ca->rtt_max / ca->base_rtt);  // min/max ratio
 
 	u32 interval_loss_rate = rs->delivered ? (rs->losses * 100) / rs->delivered : 0;
     ca->loss_rate = ema_value(ca->loss_rate, interval_loss_rate, 3);
-	ca->thresh = 10 + (avg_delay_val / base_rtt) *5);
 
 	if (!ca->lt_is_sampling) {
 		if (ca->beta_lock == 1 && ca->beta_lock_cnt >= reset_thresh) {

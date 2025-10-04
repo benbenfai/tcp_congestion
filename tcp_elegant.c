@@ -30,6 +30,7 @@ struct elegant {
 	u64 sum_rtt;               /* sum of RTTs in last round */
     u32 cnt_rtt;            /* samples in this RTT */
 	u32 loss_rate;
+	u32 thresh;
     u32 round_start:1,
 	    lt_is_sampling:1,      /* have we calc’d WWF this RTT? */
 		lt_rtt_cnt:7,          /* rtt-round counter */
@@ -57,6 +58,7 @@ static void elegant_init(struct sock *sk)
 	ca->sum_rtt = 0;
 	ca->cnt_rtt = 0;
 	ca->loss_rate = 0;
+	ca->thresh = 10;
 	ca->round_start = 0;
 	ca->lt_is_sampling = 0;
 	ca->lt_rtt_cnt = 0;
@@ -182,7 +184,7 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 			if (rtt > 0) {
 				u64 wwf64 = int_sqrt64(((u64)tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT)/rtt);
 				wwf = (u32)(wwf64 >> ELEGANT_SCALE);
-				if ((ca->lt_is_sampling && ca->loss_rate > 20) || ca->beta_lock) {
+				if ((ca->lt_is_sampling && ca->loss_rate > ca->thresh) || ca->beta_lock) {
 					wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT);
 				} else {
 					wwf = ((wwf * max_scale) >> BETA_SHIFT);
@@ -198,13 +200,15 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 {
 	struct elegant *ca = inet_csk_ca(sk);
-	u32 smoothed = ema_value(avg_delay(ca), ca->rtt_curr, 2);
-	u32 reset_thresh = 2 + (avg_delay(ca) / ca->base_rtt);  // Higher thresh in high delay
+	u32 avg_delay_val = avg_delay(ca);
+	u32 smoothed = ema_value(avg_delay_val, ca->rtt_curr, 2);
+	u32 reset_thresh = 2 + (avg_delay_val / ca->base_rtt);  // Higher thresh in high delay
     bool delay_spike = (smoothed > 2 * ca->base_rtt) &&
                        (smoothed / ca->base_rtt > ca->rtt_max / ca->base_rtt);  // min/max ratio
 
 	u32 interval_loss_rate = rs->delivered ? (rs->losses * 100) / rs->delivered : 0;
     ca->loss_rate = ema_value(ca->loss_rate, interval_loss_rate, 3);
+	ca->thresh = 10 + (avg_delay_val / base_rtt) *5);
 
 	if (!ca->lt_is_sampling) {
 		if (ca->beta_lock == 1 && ca->beta_lock_cnt >= reset_thresh) {
@@ -235,7 +239,7 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 				ca->lt_rtt_cnt++;
 				ca->had_loss_this_rtt = 0;	
 			} else if (ca->lt_rtt_cnt > 2 * lt_intvl_min_rtts) {
-				if (ca->beta_lock && ca->loss_rate <= 20) {
+				if (ca->beta_lock && ca->loss_rate <= ca->thresh) {
 					ca->beta_lock_cnt++;
 				}
 			} else if (ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {

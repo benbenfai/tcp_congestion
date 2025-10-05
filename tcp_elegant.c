@@ -231,6 +231,10 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 			ca->lt_rtt_cnt = 0;
 			ca->had_loss_this_rtt = 0;
 		} else {
+			if (ca->beta_lock_cnt > 64 && ca->beta_lock) {
+				ca->beta_lock = 0;
+				ca->beta_lock_cnt = 0;
+			}
 			if (rs->losses && !ca->had_loss_this_rtt) {
 				ca->loss_cnt++;
 				ca->had_loss_this_rtt = 1;

@@ -219,6 +219,7 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 			ca->lt_is_sampling = true;
 			ca->lt_rtt_cnt = 0;
 			ca->had_loss_this_rtt = 0;
+			ca->clean_cnt = 0
 		} else if (ca->round_start && ca->beta_lock == 1 && smoothed < 1.25 * ca->base_rtt) {
 			ca->beta_lock_cnt++;
 		}
@@ -227,10 +228,12 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 			ca->lt_is_sampling = false;
 			ca->lt_rtt_cnt = 0;
 			ca->had_loss_this_rtt = 0;
+			ca->clean_cnt = 0;
 		} else {
 			if (ca->beta_lock && (ca->clean_cnt >= reset_thresh || ca->beta_lock_cnt > 32)) {
 				ca->beta_lock = 0;
 				ca->beta_lock_cnt = 0;
+				ca->clean_cnt = 0;
 			}
 			if (ca->round_start) {
 				ca->lt_rtt_cnt++;
@@ -239,6 +242,7 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 				if (rs->losses) {
 					if (!ca->had_loss_this_rtt)
 						ca->had_loss_this_rtt = 1;
+					ca->clean_cnt = 0
 				} else if (!ca->had_loss_this_rtt) {
                     ca->clean_cnt++;
                 }
@@ -251,6 +255,7 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 						ca->beta_lock = 1;
 					}
 					ca->had_loss_this_rtt = 0;
+					ca->clean_cnt = 0
 				}
 			}
 		}

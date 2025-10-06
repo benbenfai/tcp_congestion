@@ -213,17 +213,22 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
     ca->loss_rate = ema_value(ca->loss_rate, interval_loss_rate, 3);
 
 	if (!ca->lt_is_sampling) {
-		if (ca->beta_lock == 1 && ca->beta_lock_cnt >= reset_thresh) {
-			ca->beta_lock = 0;
-			ca->beta_lock_cnt = 0;
+		if (ca->beta_lock == 1) {
+			if (ca->beta_lock_cnt >= reset_thresh) {
+				ca->beta_lock = 0;
+				ca->beta_lock_cnt = 0;
+			} else if (ca->round_start && smoothed < (5 * ca->base_rtt) / 4)) {
+				ca->beta_lock_cnt++;
+			}
 		}
-		if (rs->losses || delay_spike) {
+		if (rs->losses) {
 			ca->lt_is_sampling = true;
 			ca->lt_rtt_cnt = 0;
-			ca->had_loss_this_rtt = 0;
+			ca->had_loss_this_rtt = 1;
 			ca->clean_cnt = 0;
-		} else if (ca->round_start && ca->beta_lock == 1 && smoothed < 1.25 * ca->base_rtt) {
-			ca->beta_lock_cnt++;
+		} else if (delay_spike) {
+			ca->lt_is_sampling = true;
+			ca->lt_rtt_cnt = 0;
 		}
 	} else {
 		if (rs->is_app_limited) {
@@ -256,7 +261,6 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 					} else {
 						ca->beta_lock = 1;
 					}
-					ca->had_loss_this_rtt = 0;
 				}
 			}
 		}

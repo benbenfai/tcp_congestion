@@ -217,7 +217,7 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 			if (ca->beta_lock_cnt >= reset_thresh) {
 				ca->beta_lock = 0;
 				ca->beta_lock_cnt = 0;
-			} else if (ca->round_start && smoothed < (5 * ca->base_rtt) / 4)) {
+			} else if (ca->round_start && smoothed < (5 * ca->base_rtt) / 4) {
 				ca->beta_lock_cnt++;
 			}
 		}

@@ -202,8 +202,10 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 	struct elegant *ca = inet_csk_ca(sk);
 	u32 avg_delay_val = avg_delay(ca);
 	u32 smoothed = ema_value(avg_delay_val, ca->rtt_curr, 2);
-	u32 reset_thresh = 2 + (avg_delay_val / ca->base_rtt);  // Higher thresh in high delay
-	ca->thresh = 10 + (avg_delay_val / ca->base_rtt) * 5;
+	u32 ratio = max(1U, avg_delay_val / ca->base_rtt);
+	ratio = ilog2(ratio + 1)
+	u32 reset_thresh = 2 + ratio;
+	ca->thresh   = 5 + 3 * ratio;
     bool delay_spike = (smoothed > 2 * ca->base_rtt) &&
                        (smoothed / ca->base_rtt > ca->rtt_max / ca->base_rtt);  // min/max ratio
 

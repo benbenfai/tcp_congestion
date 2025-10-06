@@ -203,7 +203,7 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 	u32 avg_delay_val = avg_delay(ca);
 	u32 smoothed = ema_value(avg_delay_val, ca->rtt_curr, 2);
 	u32 ratio = max(1U, avg_delay_val / ca->base_rtt);
-	ratio = ilog2(ratio + 1)
+	ratio = ilog2(ratio + 1);
 	u32 reset_thresh = 2 + ratio;
 	ca->thresh   = 5 + 3 * ratio;
     bool delay_spike = (smoothed > 2 * ca->base_rtt) &&
@@ -221,7 +221,7 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 			ca->lt_is_sampling = true;
 			ca->lt_rtt_cnt = 0;
 			ca->had_loss_this_rtt = 0;
-			ca->clean_cnt = 0
+			ca->clean_cnt = 0;
 		} else if (ca->round_start && ca->beta_lock == 1 && smoothed < 1.25 * ca->base_rtt) {
 			ca->beta_lock_cnt++;
 		}
@@ -244,7 +244,7 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 				if (rs->losses) {
 					if (!ca->had_loss_this_rtt)
 						ca->had_loss_this_rtt = 1;
-					ca->clean_cnt = 0
+					ca->clean_cnt = 0;
 				} else if (!ca->had_loss_this_rtt) {
                     ca->clean_cnt++;
                 }
@@ -257,7 +257,7 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 						ca->beta_lock = 1;
 					}
 					ca->had_loss_this_rtt = 0;
-					ca->clean_cnt = 0
+					ca->clean_cnt = 0;
 				}
 			}
 		}

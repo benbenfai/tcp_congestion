@@ -35,7 +35,7 @@ struct elegant {
 	    lt_is_sampling:1,      /* have we calc’d WWF this RTT? */
 		lt_rtt_cnt:7,          /* rtt-round counter */
 		had_loss_this_rtt:1,
-		loss_cnt:7,
+		clean_cnt:7,
 		beta_lock:1,
 		beta_lock_cnt:7,
 		prev_ca_state:3,
@@ -58,12 +58,12 @@ static void elegant_init(struct sock *sk)
 	ca->sum_rtt = 0;
 	ca->cnt_rtt = 0;
 	ca->loss_rate = 0;
-	ca->thresh = 10;
+	ca->thresh = 5;
 	ca->round_start = 0;
 	ca->lt_is_sampling = 0;
 	ca->lt_rtt_cnt = 0;
 	ca->had_loss_this_rtt = 0;	
-	ca->loss_cnt = 0;
+	ca->clean_cnt = 0;
 	ca->beta_lock = 0;
 	ca->beta_lock_cnt = 0;
 	ca->prev_ca_state = TCP_CA_Open;
@@ -219,11 +219,8 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 			ca->lt_is_sampling = true;
 			ca->lt_rtt_cnt = 0;
 			ca->had_loss_this_rtt = 0;
-			if (rs->losses) ca->loss_cnt++;
 		} else if (ca->round_start && ca->beta_lock == 1 && smoothed < 1.25 * ca->base_rtt) {
 			ca->beta_lock_cnt++;
-		} else {
-			ca->loss_cnt = ema_value(ca->loss_cnt, 0, 3);
 		}
 	} else {
 		if (rs->is_app_limited) {
@@ -231,30 +228,30 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 			ca->lt_rtt_cnt = 0;
 			ca->had_loss_this_rtt = 0;
 		} else {
-			if (ca->beta_lock_cnt > 64 && ca->beta_lock) {
+			if (ca->beta_lock && (ca->clean_cnt >= reset_thresh || ca->beta_lock_cnt > 32)) {
 				ca->beta_lock = 0;
 				ca->beta_lock_cnt = 0;
-			}
-			if (rs->losses && !ca->had_loss_this_rtt) {
-				ca->loss_cnt++;
-				ca->had_loss_this_rtt = 1;
 			}
 			if (ca->round_start) {
 				ca->lt_rtt_cnt++;
 				ca->had_loss_this_rtt = 0;	
-			} else if (ca->lt_rtt_cnt > 2 * lt_intvl_min_rtts) {
-				if (ca->beta_lock && ca->loss_rate <= ca->thresh) {
-					ca->beta_lock_cnt++;
+			} else {
+				if (rs->losses) {
+					if (!ca->had_loss_this_rtt)
+						ca->had_loss_this_rtt = 1;
+				} else if (!ca->had_loss_this_rtt) {
+                    ca->clean_cnt++;
+                }
+				if (ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
+					ca->lt_is_sampling = false;
+					ca->lt_rtt_cnt = 0;
+					if (ca->beta_lock) {
+						ca->beta_lock_cnt++;
+					} else {
+						ca->beta_lock = 1;
+					}
+					ca->had_loss_this_rtt = 0;
 				}
-			} else if (ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
-				ca->lt_is_sampling = false;
-				ca->lt_rtt_cnt = 0;
-				if (ca->beta_lock) {
-					ca->beta_lock_cnt++;
-				} else {
-					ca->beta_lock = 1;
-				}
-				ca->had_loss_this_rtt = 0;
 			}
 		}
 	}

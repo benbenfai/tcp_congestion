@@ -257,7 +257,6 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 						ca->beta_lock = 1;
 					}
 					ca->had_loss_this_rtt = 0;
-					ca->clean_cnt = 0;
 				}
 			}
 		}
@@ -328,7 +327,6 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 		ca->prev_ca_state = TCP_CA_Loss;
 	} else if (ca->prev_ca_state == TCP_CA_Loss && new_state != TCP_CA_Loss) {
 		ca->lt_is_sampling = false;
-		ca->had_loss_this_rtt = 0;
 		tp->snd_cwnd = max(tp->snd_cwnd, ca->prior_cwnd);
 	}
 }
@@ -338,7 +336,6 @@ static u32 tcp_elegant_undo_cwnd(struct sock *sk)
     struct elegant *ca = inet_csk_ca(sk);
 
 	ca->lt_is_sampling = false;
-	ca->had_loss_this_rtt = 0;
 	ca->cache_wwf = 0;
 	
     return ca->prior_cwnd;

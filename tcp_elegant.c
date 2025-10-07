@@ -213,55 +213,35 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
     ca->loss_rate = ema_value(ca->loss_rate, interval_loss_rate, 3);
 
 	if (!ca->lt_is_sampling) {
-		if (rs->losses) {
+		if (rs->losses || delay_spike) {
 			ca->lt_is_sampling = true;
 			ca->lt_rtt_cnt = 0;
-			ca->had_loss_this_rtt = 1;
-		} else if (delay_spike) {
-			ca->lt_is_sampling = true;
-			ca->lt_rtt_cnt = 0;
-			ca->had_loss_this_rtt = 0;
 		}
 	} else {
 		if (rs->is_app_limited) {
 			ca->lt_is_sampling = false;
 			ca->lt_rtt_cnt = 0;
-		} else {
-			if (!ca->beta_lock) {
+		} else if (ca->round_start) {
+			ca->lt_rtt_cnt++;
+		} else if (ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
+			ca->lt_is_sampling = false;
+			ca->lt_rtt_cnt = 0;
+			if (ca->beta_lock) {
+				ca->beta_lock_cnt++;
+			} else {
 				ca->beta_lock = 1;
 			}
-			if (ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
-				ca->lt_is_sampling = false;
-				ca->lt_rtt_cnt = 0;
-				if (ca->beta_lock) {
-					ca->beta_lock_cnt++;
-				} else {
-					ca->beta_lock = 1;
-				}
-			}
 		}
 	}
-	
-	if (ca->round_start) {
-		if (ca->lt_is_sampling)
-			ca->lt_rtt_cnt++;
-		if (rs->losses) {
-			ca->had_loss_this_rtt = 1;
-			ca->clean_cnt = 0;
-		} else {
-			ca->had_loss_this_rtt = 0;
+
+	if (rs->losses) {
+		ca->had_loss_this_rtt = 1;
+		if (ca->loss_rate > ca->thresh >> 1) {
+			ca->beta_lock = 1;
 		}
-	} else {
-		if (rs->losses) {
-			if (!ca->had_loss_this_rtt)
-				ca->had_loss_this_rtt = 1;
-			ca->clean_cnt = 0;
-		} else if (!ca->had_loss_this_rtt) {
-			if (ca->beta_lock)
-				ca->clean_cnt++;
-		}
+		ca->clean_cnt = 0;
 	}
-	
+
 	if (ca->beta_lock) {
 		if (ca->beta_lock_cnt >= reset_thresh) {
 			ca->beta_lock = 0;
@@ -318,7 +298,10 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 	if (rs->interval_us > 0 && !before(rs->prior_delivered, ca->next_rtt_delivered)) {
 		ca->next_rtt_delivered = tp->delivered;
 		update_params(sk);
+		if (ca->beta_lock && !ca->had_loss_this_rtt)
+			ca->clean_cnt++;
 		ca->round_start = 1;
+		ca->had_loss_this_rtt = 0;
 	}
 
 	lt_sampling(sk, rs);

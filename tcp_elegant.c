@@ -213,58 +213,66 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
     ca->loss_rate = ema_value(ca->loss_rate, interval_loss_rate, 3);
 
 	if (!ca->lt_is_sampling) {
-		if (ca->beta_lock == 1) {
-			if (ca->beta_lock_cnt >= reset_thresh) {
-				ca->beta_lock = 0;
-				ca->beta_lock_cnt = 0;
-			} else if (ca->round_start && smoothed < (5 * ca->base_rtt) / 4) {
-				ca->beta_lock_cnt++;
-			}
-		}
 		if (rs->losses) {
 			ca->lt_is_sampling = true;
 			ca->lt_rtt_cnt = 0;
 			ca->had_loss_this_rtt = 1;
-			ca->clean_cnt = 0;
 		} else if (delay_spike) {
 			ca->lt_is_sampling = true;
 			ca->lt_rtt_cnt = 0;
+			ca->had_loss_this_rtt = 0;
 		}
 	} else {
 		if (rs->is_app_limited) {
 			ca->lt_is_sampling = false;
 			ca->lt_rtt_cnt = 0;
-			ca->had_loss_this_rtt = 0;
-			ca->clean_cnt = 0;
 		} else {
-			if (ca->beta_lock && (ca->clean_cnt >= reset_thresh || ca->beta_lock_cnt > 32)) {
-				ca->beta_lock = 0;
-				ca->beta_lock_cnt = 0;
-				ca->clean_cnt = 0;
-			}
-			if (ca->round_start) {
-				ca->lt_rtt_cnt++;
-				ca->had_loss_this_rtt = 0;	
-			} else {
-				if (rs->losses) {
-					if (!ca->had_loss_this_rtt)
-						ca->had_loss_this_rtt = 1;
-					ca->clean_cnt = 0;
-				} else if (!ca->had_loss_this_rtt) {
-                    ca->clean_cnt++;
-                }
-				if (ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
-					ca->lt_is_sampling = false;
-					ca->lt_rtt_cnt = 0;
-					if (ca->beta_lock) {
-						ca->beta_lock_cnt++;
-					} else {
-						ca->beta_lock = 1;
-					}
+			if (ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
+				ca->lt_is_sampling = false;
+				ca->lt_rtt_cnt = 0;
+				if (ca->beta_lock) {
+					ca->beta_lock_cnt++;
+				} else {
+					ca->beta_lock = 1;
 				}
 			}
 		}
 	}
+	
+	if (ca->round_start) {
+		if (ca->lt_is_sampling)
+			ca->lt_rtt_cnt++;
+		if (rs->losses) {
+			ca->had_loss_this_rtt = 1;
+			ca->clean_cnt = 0;
+		} else {
+			ca->had_loss_this_rtt = 0;
+		}
+	} else {
+		if (rs->losses) {
+			if (!ca->had_loss_this_rtt)
+				ca->had_loss_this_rtt = 1;
+			ca->clean_cnt = 0;
+		} else if (!ca->had_loss_this_rtt) {
+			if (ca->beta_lock)
+				ca->clean_cnt++;
+		}
+	}
+	
+	if (ca->beta_lock) {
+		if (ca->beta_lock_cnt >= reset_thresh) {
+			ca->beta_lock = 0;
+			ca->beta_lock_cnt = 0;
+		} else if (ca->round_start && smoothed < (5 * ca->base_rtt) / 4) {
+			ca->beta_lock_cnt++;
+		}
+		if (ca->clean_cnt >= reset_thresh || ca->beta_lock_cnt > 32) {
+			ca->beta_lock = 0;
+			ca->beta_lock_cnt = 0;
+			ca->clean_cnt = 0;
+		}
+	}
+	
 }
 
 static void elegant_update_rtt(struct sock *sk, const struct rate_sample *rs)

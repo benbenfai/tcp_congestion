@@ -227,6 +227,9 @@ static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
 			ca->lt_is_sampling = false;
 			ca->lt_rtt_cnt = 0;
 		} else {
+			if (!ca->beta_lock) {
+				ca->beta_lock = 1;
+			}
 			if (ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
 				ca->lt_is_sampling = false;
 				ca->lt_rtt_cnt = 0;

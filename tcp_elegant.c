@@ -18,6 +18,11 @@ static const u32 lt_intvl_min_rtts = 4;
 static int scale __read_mostly = 96U; // 1.5 * BETA_SCALE
 static int max_scale __read_mostly = 88U;
 
+static int spike_offset __read_mostly = 2;
+static int pers_offset __read_mostly = 8;
+module_param(spike_offset, int, 0644);
+module_param(pers_offset, int, 0644);
+
 static int win_thresh __read_mostly = 24; /* Increased threshold for adaptive alpha/beta */
 module_param(win_thresh, int, 0);
 MODULE_PARM_DESC(win_thresh, "Window threshold for starting adaptive sizing");
@@ -173,7 +178,7 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 				u32 thresh_ratio = ilog2(persistent_ratio + 1);
 				u64 wwf64 = int_sqrt64(((u64)tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT)/rtt);
 				wwf = (u32)(wwf64 >> ELEGANT_SCALE);
-				if (spike_ratio > 5 + thresh_ratio || persistent_ratio > 10 + thresh_ratio) {
+				if (spike_ratio > spike_offset + thresh_ratio || persistent_ratio > pers_offset + thresh_ratio) {
 					wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT);
 				} else {
 					wwf = ((wwf * max_scale) >> BETA_SHIFT);

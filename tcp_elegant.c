@@ -29,7 +29,7 @@ struct elegant {
 	u32 beta;  				 /* multiplicative decrease factor */
 	u64 sum_rtt;               /* sum of RTTs in last round */
     u32 cnt_rtt;            /* samples in this RTT */
-	u32 loss_rate;
+	u32 avg_delay_val;
     u32 round_start:1,
 		prev_ca_state:3,
 		unused:28;
@@ -50,6 +50,7 @@ static void elegant_init(struct sock *sk)
 	ca->beta = BETA_MIN;
 	ca->sum_rtt = 0;
 	ca->cnt_rtt = 0;
+	ca->avg_delay_val = 0;
 	ca->round_start = 0;
 	ca->prev_ca_state = TCP_CA_Open;
 	ca->cache_wwf = 0;
@@ -135,7 +136,7 @@ static void update_params(struct sock *sk)
 		ca->inv_beta = scale - BETA_BASE; // 96 - 32 = 64 (1.0)
     } else if (ca->cnt_rtt > 0) {
 		u32 dm = max_delay(ca);
-		u32 da = avg_delay(ca);
+		u32 da = ca->avg_delay_val = avg_delay(ca);
 
 		ca->beta = beta(da, dm);
 		ca->inv_beta = scale - ca->beta; // 96 - beta
@@ -167,12 +168,12 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		if (ca->round_start || wwf == 0) {
 			u32 rtt = ema_value(ca->rtt_curr, ca->base_rtt, 3);
 			if (rtt > 0) {
-				u32 avg_delay_val = avg_delay(ca);
-				u32 spike_ratio = max(1U, avg_delay_val / ca->rtt_curr);
-				u32 persistent_ratio = max(1U, avg_delay_val / ca->base_rtt);
+				u32 spike_ratio = max(1U, ca->avg_delay_val / ca->rtt_curr);
+				u32 persistent_ratio = max(1U, ca->avg_delay_val / ca->base_rtt);
+				u32 thresh_ratio = ilog2(persistent_ratio + 1);
 				u64 wwf64 = int_sqrt64(((u64)tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT)/rtt);
 				wwf = (u32)(wwf64 >> ELEGANT_SCALE);
-				if (spike_ratio > 10 || persistent_ratio > 25) {
+				if (spike_ratio > 5 + thresh_ratio || persistent_ratio > 10 + thresh_ratio) {
 					wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT);
 				} else {
 					wwf = ((wwf * max_scale) >> BETA_SHIFT);

@@ -32,14 +32,8 @@ struct elegant {
 	u32 loss_rate;
 	u32 thresh;
     u32 round_start:1,
-	    lt_is_sampling:1,      /* have we calc’d WWF this RTT? */
-		lt_rtt_cnt:7,          /* rtt-round counter */
-		had_loss_this_rtt:1,
-		clean_cnt:7,
-		beta_lock:1,
-		beta_lock_cnt:7,
 		prev_ca_state:3,
-		unused:4;
+		unused:28;
 	u32	cache_wwf;
 	u32 inv_beta;
 	u32 prior_cwnd;	/* prior cwnd upon entering loss recovery */
@@ -57,15 +51,7 @@ static void elegant_init(struct sock *sk)
 	ca->beta = BETA_MIN;
 	ca->sum_rtt = 0;
 	ca->cnt_rtt = 0;
-	ca->loss_rate = 0;
-	ca->thresh = 5;
 	ca->round_start = 0;
-	ca->lt_is_sampling = 0;
-	ca->lt_rtt_cnt = 0;
-	ca->had_loss_this_rtt = 0;	
-	ca->clean_cnt = 0;
-	ca->beta_lock = 0;
-	ca->beta_lock_cnt = 0;
 	ca->prev_ca_state = TCP_CA_Open;
 	ca->cache_wwf = 0;
 	ca->inv_beta = max_scale; // 96 - 8 = 88 (1.375)
@@ -182,9 +168,12 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		if (ca->round_start || wwf == 0) {
 			u32 rtt = ema_value(ca->rtt_curr, ca->base_rtt, 3);
 			if (rtt > 0) {
+				u32 avg_delay_val = avg_delay(ca);
+				u32 spike_ratio = max(1U, avg_delay_val / ca->rtt_curr);
+				u32 persistent_ratio = max(1U, avg_delay_val / ca->base_rtt);
 				u64 wwf64 = int_sqrt64(((u64)tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT)/rtt);
 				wwf = (u32)(wwf64 >> ELEGANT_SCALE);
-				if ((ca->lt_is_sampling && ca->loss_rate > ca->thresh) || ca->beta_lock) {
+				if (spike_ratio > 10 || persistent_ratio > 25) {
 					wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT);
 				} else {
 					wwf = ((wwf * max_scale) >> BETA_SHIFT);
@@ -195,68 +184,6 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		wwf = max(wwf, acked);
 	}
 	tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
-}
-
-static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
-{
-	struct elegant *ca = inet_csk_ca(sk);
-	u32 avg_delay_val = avg_delay(ca);
-	u32 smoothed = ema_value(avg_delay_val, ca->rtt_curr, 2);
-	u32 ratio = max(1U, avg_delay_val / ca->base_rtt);
-	ratio = ilog2(ratio + 1);
-	u32 reset_thresh = 2 + ratio;
-	ca->thresh   = 5 + 3 * ratio;
-    bool delay_spike = (smoothed > 2 * ca->base_rtt) &&
-                       (smoothed / ca->base_rtt > ca->rtt_max / ca->base_rtt);  // min/max ratio
-
-	u32 interval_loss_rate = rs->delivered ? (rs->losses * 100) / rs->delivered : 0;
-    ca->loss_rate = ema_value(ca->loss_rate, interval_loss_rate, 3);
-
-	if (!ca->lt_is_sampling) {
-		if (rs->losses || delay_spike) {
-			ca->lt_is_sampling = true;
-			ca->lt_rtt_cnt = 0;
-		}
-	} else {
-		if (rs->is_app_limited) {
-			ca->lt_is_sampling = false;
-			ca->lt_rtt_cnt = 0;
-		} else if (ca->round_start) {
-			ca->lt_rtt_cnt++;
-		} else if (ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
-			ca->lt_is_sampling = false;
-			ca->lt_rtt_cnt = 0;
-			if (ca->beta_lock) {
-				ca->beta_lock_cnt++;
-			} else {
-				ca->beta_lock = 1;
-			}
-		}
-	}
-
-	if (rs->losses) {
-		ca->had_loss_this_rtt = 1;
-		if (ca->loss_rate > ca->thresh >> 1) {
-			ca->beta_lock = 1;
-		}
-		ca->clean_cnt = 0;
-	}
-
-	if (ca->beta_lock) {
-		if (ca->beta_lock_cnt >= reset_thresh) {
-			ca->beta_lock = 0;
-			ca->beta_lock_cnt = 0;
-			ca->clean_cnt = 0;
-		} else if (ca->round_start && smoothed < (5 * ca->base_rtt) / 4) {
-			ca->beta_lock_cnt++;
-		}
-		if (ca->clean_cnt >= reset_thresh || ca->beta_lock_cnt > 32) {
-			ca->beta_lock = 0;
-			ca->beta_lock_cnt = 0;
-			ca->clean_cnt = 0;
-		}
-	}
-	
 }
 
 static void elegant_update_rtt(struct sock *sk, const struct rate_sample *rs)
@@ -298,13 +225,8 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 	if (rs->interval_us > 0 && !before(rs->prior_delivered, ca->next_rtt_delivered)) {
 		ca->next_rtt_delivered = tp->delivered;
 		update_params(sk);
-		if (ca->beta_lock && !ca->had_loss_this_rtt)
-			ca->clean_cnt++;
 		ca->round_start = 1;
-		ca->had_loss_this_rtt = 0;
 	}
-
-	lt_sampling(sk, rs);
 
 	ca->prev_ca_state = inet_csk(sk)->icsk_ca_state;
 }
@@ -315,17 +237,13 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 	struct elegant *ca = inet_csk_ca(sk);
 
 	if (new_state == TCP_CA_Loss) {
-		struct rate_sample rs = { .losses = 1 };
-
 		ca->rtt_max = ca->rtt_curr;
 		ca->beta = ema_value(ca->beta, BETA_BASE, 1);
 		rtt_reset(tp, ca);
-		lt_sampling(sk, &rs);
 		ca->cache_wwf = 0;
 		ca->inv_beta = scale - ca->beta;
 		ca->prev_ca_state = TCP_CA_Loss;
 	} else if (ca->prev_ca_state == TCP_CA_Loss && new_state != TCP_CA_Loss) {
-		ca->lt_is_sampling = false;
 		tp->snd_cwnd = max(tp->snd_cwnd, ca->prior_cwnd);
 	}
 }
@@ -334,7 +252,6 @@ static u32 tcp_elegant_undo_cwnd(struct sock *sk)
 {
     struct elegant *ca = inet_csk_ca(sk);
 
-	ca->lt_is_sampling = false;
 	ca->cache_wwf = 0;
 	
     return ca->prior_cwnd;

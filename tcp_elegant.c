@@ -31,15 +31,15 @@ struct elegant {
 	u32	rtt_curr;
 	u32	rtt_max;
 	u32	base_rtt;	/* min of all rtt in usec */
+	u32 avg_delay_val;
+	u32	cache_wwf;
 	u32 beta;  				 /* multiplicative decrease factor */
+	u32 inv_beta;
 	u64 sum_rtt;               /* sum of RTTs in last round */
     u32 cnt_rtt;            /* samples in this RTT */
-	u32 avg_delay_val;
     u32 round_start:1,
 		prev_ca_state:3,
 		unused:28;
-	u32	cache_wwf;
-	u32 inv_beta;
 	u32 prior_cwnd;	/* prior cwnd upon entering loss recovery */
 	u32	next_rtt_delivered;
 };
@@ -52,14 +52,14 @@ static void elegant_init(struct sock *sk)
 	ca->rtt_curr = 0;
 	ca->rtt_max = 0;
 	ca->base_rtt = 0x7fffffff;
+	ca->avg_delay_val = 0;
+	ca->cache_wwf = 0;
 	ca->beta = BETA_MIN;
+	ca->inv_beta = max_scale; // 96 - 8 = 88 (1.375)
 	ca->sum_rtt = 0;
 	ca->cnt_rtt = 0;
-	ca->avg_delay_val = 0;
 	ca->round_start = 0;
 	ca->prev_ca_state = TCP_CA_Open;
-	ca->cache_wwf = 0;
-	ca->inv_beta = max_scale; // 96 - 8 = 88 (1.375)
 	ca->prior_cwnd = tp->prior_cwnd;
 	ca->next_rtt_delivered = tp->delivered;
 }

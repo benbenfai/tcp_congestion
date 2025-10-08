@@ -30,7 +30,6 @@ struct elegant {
 	u64 sum_rtt;               /* sum of RTTs in last round */
     u32 cnt_rtt;            /* samples in this RTT */
 	u32 loss_rate;
-	u32 thresh;
     u32 round_start:1,
 		prev_ca_state:3,
 		unused:28;

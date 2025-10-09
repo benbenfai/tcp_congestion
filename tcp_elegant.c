@@ -51,7 +51,6 @@ static void elegant_init(struct sock *sk)
 	ca->inv_beta = max_scale; // 96 - 8 = 88 (1.375)
 	ca->sum_rtt = 0;
 	ca->cnt_rtt = 0;
-	ca->beta_lock = 0;
 	ca->round_start = 0;
 	ca->prev_ca_state = TCP_CA_Open;
 	ca->prior_cwnd = tp->prior_cwnd;
@@ -173,7 +172,7 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 				u64 wwf64 = ((u64)tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT);
 				do_div(wwf64, rtt);
 				wwf = int_sqrt(wwf64);
-				wwf = wwf >> ELEGANT_SCALE);
+				wwf = wwf >> ELEGANT_SCALE;
 				wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT);
 				ca->cache_wwf = wwf;
 			}

@@ -1,7 +1,7 @@
 #include <linux/module.h>
+#include <linux/skbuff.h>
+#include <asm/div64.h>
 #include <net/tcp.h>
-#include <linux/bitops.h>
-#include <linux/math64.h>
 
 #define BETA_SHIFT	6
 #define BETA_SCALE	(1u<<BETA_SHIFT)
@@ -18,12 +18,7 @@ static const u32 lt_intvl_min_rtts = 4;
 static int scale __read_mostly = 96U; // 1.5 * BETA_SCALE
 static int max_scale __read_mostly = 88U;
 
-static int spike_offset __read_mostly = 2;
-static int pers_offset __read_mostly = 8;
-module_param(spike_offset, int, 0644);
-module_param(pers_offset, int, 0644);
-
-static int win_thresh __read_mostly = 24; /* Increased threshold for adaptive alpha/beta */
+static int win_thresh __read_mostly = 15; /* Increased threshold for adaptive alpha/beta */
 module_param(win_thresh, int, 0);
 MODULE_PARM_DESC(win_thresh, "Window threshold for starting adaptive sizing");
 
@@ -37,12 +32,8 @@ struct elegant {
 	u64 sum_rtt;               /* sum of RTTs in last round */
     u32 cnt_rtt;            /* samples in this RTT */
     u32 round_start:1,
-		clean_cnt:5,
-		thresh_ratio:3,
-		has_loss:1,
-		beta_lock:1,
 		prev_ca_state:3,
-		unused:19;
+		unused:28;
 	u32 prior_cwnd;	/* prior cwnd upon entering loss recovery */
 	u32	next_rtt_delivered;
 };
@@ -60,11 +51,8 @@ static void elegant_init(struct sock *sk)
 	ca->inv_beta = max_scale; // 96 - 8 = 88 (1.375)
 	ca->sum_rtt = 0;
 	ca->cnt_rtt = 0;
-	ca->thresh_ratio = 0;
-	ca->has_loss = 0;
 	ca->beta_lock = 0;
 	ca->round_start = 0;
-	ca->clean_cnt = 0;
 	ca->prev_ca_state = TCP_CA_Open;
 	ca->prior_cwnd = tp->prior_cwnd;
 	ca->next_rtt_delivered = tp->delivered;
@@ -99,7 +87,10 @@ static inline u32 max_delay(const struct elegant *ca)
 /* Average queuing delay */
 static inline u32 avg_delay(const struct elegant *ca)
 {
-    return ca->cnt_rtt ? (ca->sum_rtt / ca->cnt_rtt) - ca->base_rtt : 0;
+	u64 t = ca->sum_rtt;
+
+	do_div(t, ca->cnt_rtt);
+	return t - ca->base_rtt;
 }
 
 static u32 beta(u32 da, u32 dm)
@@ -179,19 +170,12 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		if (ca->round_start || wwf == 0) {
 			u32 rtt = ema_value(ca->rtt_curr, ca->base_rtt, 3);
 			if (rtt > 0) {
-				u32 avg_delay_val = avg_delay(ca);
-				u32 spike_ratio = max(1U, avg_delay_val / ca->rtt_curr);
-				u32 persistent_ratio = max(1U, avg_delay_val / ca->base_rtt);
-				u32 thresh_ratio = ilog2(persistent_ratio + 1);
-				u64 wwf64 = int_sqrt64(((u64)tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT)/rtt);
-				wwf = (u32)(wwf64 >> ELEGANT_SCALE);
-				if (ca->beta_lock || (spike_ratio > spike_offset + thresh_ratio || persistent_ratio > pers_offset + thresh_ratio)) {
-					wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT);
-				} else {
-					wwf = ((wwf * max_scale) >> BETA_SHIFT);
-				}
+				u64 wwf64 = ((u64)tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT);
+				do_div(wwf64, rtt);
+				wwf = int_sqrt(wwf64);
+				wwf = wwf >> ELEGANT_SCALE);
+				wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT);
 				ca->cache_wwf = wwf;
-				ca->thresh_ratio = thresh_ratio;
 			}
 		}
 		wwf = max(wwf, acked);
@@ -239,16 +223,6 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 		ca->next_rtt_delivered = tp->delivered;
 		update_params(sk);
 		ca->round_start = 1;
-		if (ca->beta_lock && ca->clean_cnt >= spike_offset + ca->thresh_ratio) {
-			ca->beta_lock = 0;
-		} else if (ca->beta_lock && !ca->has_loss) {
-			ca->clean_cnt++;
-		}
-		ca->has_loss = 0;
-	}
-	
-	if (rs->losses) {
-		ca->has_loss = 1;
 	}
 
 	ca->prev_ca_state = inet_csk(sk)->icsk_ca_state;

@@ -169,7 +169,7 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		if (ca->round_start || wwf == 0) {
 			u32 rtt = ema_value(ca->rtt_curr, ca->base_rtt, 3);
 			if (rtt > 0) {
-				u64 wwf64 = ((u64)tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT);
+				u64 wwf64 = tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT;
 				do_div(wwf64, rtt);
 				wwf = int_sqrt(wwf64);
 				wwf = wwf >> ELEGANT_SCALE;

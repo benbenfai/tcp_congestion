@@ -132,12 +132,15 @@ static void update_params(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
-    if (tp->snd_cwnd < win_thresh) {
+	u32 avg_delay_val = avg_delay(ca);
+	u32 thresh = win_thresh + ilog2(max(1, avg_delay_val / ca->base_rtt));
+
+    if (tp->snd_cwnd < thresh) {
         ca->beta = BETA_BASE;
 		ca->inv_beta = scale - BETA_BASE; // 96 - 32 = 64 (1.0)
     } else if (ca->cnt_rtt > 0) {
 		u32 dm = max_delay(ca);
-		u32 da = avg_delay(ca);
+		u32 da = avg_delay_val;
 
 		ca->beta = beta(da, dm);
 		ca->inv_beta = scale - ca->beta; // 96 - beta
@@ -170,9 +173,9 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 			u32 rtt = ema_value(ca->rtt_curr, ca->base_rtt, 3);
 			if (rtt > 0) {
 				u64 wwf64 = tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT;
-				do_div(wwf64, rtt);
-				wwf = int_sqrt(wwf64);
-				wwf = wwf >> ELEGANT_SCALE;
+				do_div64(wwf64, rtt);
+				wwf64 = int_sqrt64(wwf64);
+				wwf = wwf64 >> ELEGANT_SCALE;
 				wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT);
 				ca->cache_wwf = wwf;
 			}

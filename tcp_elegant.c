@@ -137,13 +137,13 @@ static void update_params(struct sock *sk)
 
     if (tp->snd_cwnd < thresh) {
         ca->beta = BETA_BASE;
-		ca->inv_beta = scale - BETA_BASE; // 96 - 32 = 64 (1.0)
+		ca->inv_beta = max_scale;
     } else if (ca->cnt_rtt > 0) {
 		u32 dm = max_delay(ca);
 		u32 da = avg_delay_val;
 
 		ca->beta = beta(da, dm);
-		ca->inv_beta = scale - ca->beta; // 96 - beta
+		ca->inv_beta = scale - ca->beta;
 	}
 
 	rtt_reset(tp, ca);
@@ -237,10 +237,8 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 
 	if (new_state == TCP_CA_Loss) {
 		ca->rtt_max = ca->rtt_curr;
-		ca->beta = ema_value(ca->beta, BETA_BASE, 1);
 		rtt_reset(tp, ca);
 		ca->cache_wwf = 0;
-		ca->inv_beta = scale - ca->beta;
 		ca->prev_ca_state = TCP_CA_Loss;
 	} else if (ca->prev_ca_state == TCP_CA_Loss && new_state != TCP_CA_Loss) {
 		tp->snd_cwnd = max(tp->snd_cwnd, ca->prior_cwnd);

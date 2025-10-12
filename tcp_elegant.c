@@ -154,6 +154,14 @@ static inline u32 ema_value(u32 old, u32 new, u32 alpha_shift) {
     return (old * ((1<<alpha_shift)-1) + new) >> alpha_shift;
 }
 
+static inline u32 approx_sqrt64(u64 x) {
+	if (x == 0) return 0;
+	u64 guess = x >> 32;
+	for (int i=0; i<3; i++)
+		guess = (guess + x / guess) / 2;
+	return guess;
+}
+
 static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -174,7 +182,7 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 			if (rtt > 0) {
 				u64 wwf64 = tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT;
 				div_u64(wwf64, rtt);
-				wwf64 = int_sqrt64(wwf64);
+				wwf64 = approx_sqrt64(wwf64);
 				wwf = wwf64 >> ELEGANT_SCALE;
 				wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT);
 				ca->cache_wwf = wwf;

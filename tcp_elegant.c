@@ -208,26 +208,59 @@ static void elegant_update_rtt(struct sock *sk, const struct rate_sample *rs)
 	ca->sum_rtt += rtt_us;
 }
 
-static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *rs)
+static void tcp_elegant_round(struct sock *sk, const struct rate_sample *rs)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
-	
-	if (ca->cnt_rtt == 0 || rs->delivered > rs->prior_delivered)
-		elegant_update_rtt(sk, rs);
+
+	ca->round_start = 0;
 
 	if (rs->interval_us <= 0 || !rs->acked_sacked)
 		return; /* Not a valid observation */
 
-	ca->round_start = 0;
 	/* See if we've reached the next RTT */
 	if (rs->interval_us > 0 && !before(rs->prior_delivered, ca->next_rtt_delivered)) {
 		ca->next_rtt_delivered = tp->delivered;
 		update_params(sk);
 		ca->round_start = 1;
 	}
+}
 
-	ca->prev_ca_state = inet_csk(sk)->icsk_ca_state;
+static void tcp_elegant_cwnd(struct sock *sk, const struct rate_sample *rs)
+{
+	struct tcp_sock *tp = tcp_sk(sk);
+	struct elegant *ca = inet_csk_ca(sk);
+
+	u8 prev_state = ca->prev_ca_state, state = inet_csk(sk)->icsk_ca_state;
+	u32 cwnd = tp->snd_cwnd;
+
+	if (rs->losses > 0)
+		cwnd = max_t(s32, cwnd - rs->losses, 1);
+
+	if (state == TCP_CA_Recovery && prev_state != TCP_CA_Recovery) {
+		ca->next_rtt_delivered = tp->delivered;  /* start round now */
+		cwnd = tcp_packets_in_flight(tp) + rs->acked_sacked;
+	} else if (prev_state >= TCP_CA_Recovery && state < TCP_CA_Recovery) {
+		cwnd = max(cwnd, ca->prior_cwnd);
+	}
+
+	ca->prev_ca_state = state;
+}
+
+static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *rs)
+{
+	struct elegant *ca = inet_csk_ca(sk);
+	
+	if (ca->cnt_rtt == 0 || rs->delivered > rs->prior_delivered)
+		elegant_update_rtt(sk, rs);
+
+	tcp_elegant_round(sk, rs);
+
+	if (rs->is_app_limited)
+		ca->inv_beta = max_scale;
+
+	if (!rs->acked_sacked)
+		tcp_elegant_cwnd(sk, rs);
 }
 
 static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
@@ -239,6 +272,7 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 		ca->rtt_max = ca->rtt_curr;
 		rtt_reset(tp, ca);
 		ca->cache_wwf = 0;
+		ca->round_start = 1;
 		ca->prev_ca_state = TCP_CA_Loss;
 	} else if (ca->prev_ca_state == TCP_CA_Loss && new_state != TCP_CA_Loss) {
 		tp->snd_cwnd = max(tp->snd_cwnd, ca->prior_cwnd);

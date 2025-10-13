@@ -254,7 +254,7 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 	tcp_elegant_round(sk, rs);
 
 	if (rs->is_app_limited)
-		ca->inv_beta = max_scale;
+		ca->inv_beta = scale;
 }
 
 static void tcp_elegant_set_state(struct sock *sk, u8 new_state)

@@ -163,7 +163,7 @@ static inline u64 fast_isqrt(u64 x)
     u64 r = 1ULL << ((fls64(x) - 1) >> 1);
 
     /* two Newton iteration */
-    for (int i=0; i<2; i++)
+    for (int i=0; i<3; i++)
 		r = (r + x / r) >> 1;
 	
 	if (r*r>x)

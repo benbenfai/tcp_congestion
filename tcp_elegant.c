@@ -65,7 +65,7 @@ static u32 tcp_elegant_ssthresh(struct sock *sk)
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
-	return max(tp->snd_cwnd - calculate_beta_scaled_value(ca->beta, cwnd), 2U);
+	return max(tp->snd_cwnd - calculate_beta_scaled_value(ca->beta, tp->snd_cwnd), 2U);
 }
 
 /* Maximum queuing delay */

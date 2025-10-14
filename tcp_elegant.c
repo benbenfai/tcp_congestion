@@ -34,7 +34,6 @@ struct elegant {
     u32 round_start:1,
 		prev_ca_state:3,
 		unused:28;
-	u32 prior_cwnd;	/* prior cwnd upon entering loss recovery */
 	u32	next_rtt_delivered;
 };
 
@@ -53,7 +52,6 @@ static void elegant_init(struct sock *sk)
 	ca->cnt_rtt = 0;
 	ca->round_start = 0;
 	ca->prev_ca_state = TCP_CA_Open;
-	ca->prior_cwnd = tp->prior_cwnd;
 	ca->next_rtt_delivered = tp->delivered;
 }
 
@@ -67,14 +65,7 @@ static u32 tcp_elegant_ssthresh(struct sock *sk)
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
-	u32 cwnd = tp->snd_cwnd;
-
-	if (ca->prev_ca_state < TCP_CA_Recovery)
-		ca->prior_cwnd = cwnd;
-	else
-		ca->prior_cwnd = max(ca->prior_cwnd,  cwnd);
-
-	return max(cwnd - calculate_beta_scaled_value(ca->beta, cwnd), 2U);
+	return max(tp->snd_cwnd - calculate_beta_scaled_value(ca->beta, cwnd), 2U);
 }
 
 /* Maximum queuing delay */
@@ -267,22 +258,21 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 
 	if (new_state == TCP_CA_Loss) {
 		ca->rtt_max = ca->rtt_curr;
-		rtt_reset(tp, ca);
 		ca->cache_wwf = 0;
+		rtt_reset(tp, ca);
 		ca->round_start = 1;
 		ca->prev_ca_state = TCP_CA_Loss;
-	} else if (ca->prev_ca_state == TCP_CA_Loss && new_state != TCP_CA_Loss) {
-		tp->snd_cwnd = max(tp->snd_cwnd, ca->prior_cwnd);
 	}
 }
 
 static u32 tcp_elegant_undo_cwnd(struct sock *sk)
 {
+	struct tcp_sock *tp = tcp_sk(sk);
     struct elegant *ca = inet_csk_ca(sk);
 
 	ca->cache_wwf = 0;
-	
-    return ca->prior_cwnd;
+
+    return max(tp->snd_cwnd, tp->prior_cwnd);
 }
 
 static struct tcp_congestion_ops tcp_elegant __read_mostly = {

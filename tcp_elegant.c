@@ -26,11 +26,11 @@ struct elegant {
 	u32	rtt_curr;
 	u32	rtt_max;
 	u32	base_rtt;	/* min of all rtt in usec */
+	u64 sum_rtt;               /* sum of RTTs in last round */
+    u32 cnt_rtt;            /* samples in this RTT */
 	u32	cache_wwf;
 	u32 beta;  				 /* multiplicative decrease factor */
 	u32 inv_beta;
-	u64 sum_rtt;               /* sum of RTTs in last round */
-    u32 cnt_rtt;            /* samples in this RTT */
     u32 round_start:1,
 		prev_ca_state:3,
 		unused:28;
@@ -45,11 +45,11 @@ static void elegant_init(struct sock *sk)
 	ca->rtt_curr = 0;
 	ca->rtt_max = 0;
 	ca->base_rtt = 0x7fffffff;
+	ca->sum_rtt = 0;
+	ca->cnt_rtt = 0;
 	ca->cache_wwf = 0;
 	ca->beta = BETA_MIN;
 	ca->inv_beta = max_scale; // 96 - 8 = 88 (1.375)
-	ca->sum_rtt = 0;
-	ca->cnt_rtt = 0;
 	ca->round_start = 0;
 	ca->prev_ca_state = TCP_CA_Open;
 	ca->next_rtt_delivered = tp->delivered;
@@ -258,8 +258,8 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 
 	if (new_state == TCP_CA_Loss) {
 		ca->rtt_max = ca->rtt_curr;
-		ca->cache_wwf = 0;
 		rtt_reset(tp, ca);
+		ca->cache_wwf = 0;
 		ca->round_start = 1;
 		ca->prev_ca_state = TCP_CA_Loss;
 	}

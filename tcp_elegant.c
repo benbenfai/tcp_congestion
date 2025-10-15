@@ -124,7 +124,7 @@ static void update_params(struct sock *sk)
 	struct elegant *ca = inet_csk_ca(sk);
 
 	u32 avg_delay_val = avg_delay(ca);
-	u32 thresh = win_thresh + ilog2(max(1U, avg_delay_val / ca->base_rtt));
+	u32 thresh = win_thresh + ilog2((avg_delay_val / ca->base_rtt)+1) + ilog2((avg_delay_val / 1000) + 1);
 
     if (tp->snd_cwnd < thresh) {
         ca->beta = BETA_BASE;

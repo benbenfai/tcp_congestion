@@ -176,6 +176,7 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		wwf = tcp_slow_start(tp, acked);
 		if (!wwf)
 			return;
+		wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT);
 	} else {
 		wwf = ca->cache_wwf;
 		if (ca->round_start || wwf == 0) {

@@ -186,13 +186,13 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 				div_u64(wwf64, rtt);
 				wwf64 = fast_isqrt(wwf64);
 				wwf = wwf64 >> ELEGANT_SCALE;
+				if (wwf > acked) {
+					ca->cache_wwf = wwf;
+				} else {
+					wwf = acked;
+				}
 				wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT);
 			}
-		}
-		if (wwf > acked) {
-			ca->cache_wwf = wwf;
-		} else {
-			wwf = acked;
 		}
 	}
 	tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);

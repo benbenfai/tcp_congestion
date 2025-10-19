@@ -140,6 +140,26 @@ static void update_params(struct sock *sk)
 	rtt_reset(tp, ca);
 }
 
+static void elegant_update_pacing_rate(struct sock *sk) {
+    struct tcp_sock *tp = tcp_sk(sk);
+	struct elegant *ca = inet_csk_ca(sk);
+    u64 rate;
+
+    if (tp->srtt_us == 0)
+        rate = ~0ULL;
+    else {
+        // Base rate: (cwnd * mss * scaling) / srtt_us
+        rate = (u64)tp->snd_cwnd * tp->mss_cache;
+        rate <<= 3;
+        do_div(rate, tp->srtt_us);  // Divide to get bytes/usec
+        rate *= USEC_PER_SEC;
+
+        rate = (rate * ca->inv_beta) >> BETA_SHIFT;
+    }
+
+	WRITE_ONCE(sk->sk_pacing_rate, min_t(u64, rate, sk->sk_max_pacing_rate));
+}
+
 static inline u32 ema_value(u32 old, u32 new, u32 alpha_shift) {
 	//(e.g., shift=3 for 1/8)
     return (old * ((1<<alpha_shift)-1) + new) >> alpha_shift;
@@ -196,6 +216,7 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		}
 	}
 	tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
+	elegant_update_pacing_rate(sk);
 }
 
 static void elegant_update_rtt(struct sock *sk, const struct rate_sample *rs)

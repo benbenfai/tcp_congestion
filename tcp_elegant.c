@@ -141,24 +141,24 @@ static void update_params(struct sock *sk)
 }
 
 static void elegant_update_pacing_rate(struct sock *sk) {
-    struct tcp_sock *tp = tcp_sk(sk);
-	struct elegant *ca = inet_csk_ca(sk);
+    const struct tcp_sock *tp = tcp_sk(sk);
+    struct elegant *ca = inet_csk_ca(sk);
     u64 rate;
 
-    if (unlikely(tp->srtt_us ==0)) {
-        rate = sk->sk_max_pacing_rate;;
-    } else {
-        // Base rate: (cwnd * mss * scaling) / srtt_us
-		rate = (u64)max_t(u32, tp->snd_cwnd, tp->packets_out) * tp->mss_cache;
-		
-        rate <<= 3;
-        do_div(rate, tp->srtt_us);  // Divide to get bytes/usec
-        rate *= USEC_PER_SEC;
+    rate = (u64)tp->mss_cache * ((USEC_PER_SEC / 100) << 3);
+    rate = (rate * ca->inv_beta) >> BETA_SHIFT;
 
-        rate = (rate * ca->inv_beta) >> BETA_SHIFT;
-    }
+    if (tp->snd_cwnd < tp->snd_ssthresh / 2)
+        rate *= 2;
+    else
+        rate *= 12 / 10;
 
-	WRITE_ONCE(sk->sk_pacing_rate, min_t(u64, rate, sk->sk_max_pacing_rate));
+    rate *= max(tp->snd_cwnd, tp->packets_out);
+
+    if (likely(tp->srtt_us))
+        do_div(rate, tp->srtt_us);
+
+    WRITE_ONCE(sk->sk_pacing_rate, min_t(u64, rate, sk->sk_max_pacing_rate));
 }
 
 static inline u32 ema_value(u32 old, u32 new, u32 alpha_shift) {

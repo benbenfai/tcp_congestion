@@ -145,11 +145,12 @@ static void elegant_update_pacing_rate(struct sock *sk) {
 	struct elegant *ca = inet_csk_ca(sk);
     u64 rate;
 
-    if (tp->srtt_us == 0)
-        rate = ~0ULL;
-    else {
+    if (unlikely(tp->srtt_us ==0)) {
+        rate = sk->sk_max_pacing_rate;;
+    } else {
         // Base rate: (cwnd * mss * scaling) / srtt_us
-        rate = (u64)tp->snd_cwnd * tp->mss_cache;
+		rate = (u64)max_t(u32, tp->snd_cwnd, tp->packets_out) * tp->mss_cache;
+		
         rate <<= 3;
         do_div(rate, tp->srtt_us);  // Divide to get bytes/usec
         rate *= USEC_PER_SEC;
@@ -268,9 +269,6 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 		elegant_update_rtt(sk, rs);
 
 	tcp_elegant_round(sk, rs);
-
-	if (rs->is_app_limited)
-		ca->inv_beta = scale;
 }
 
 static void tcp_elegant_set_state(struct sock *sk, u8 new_state)

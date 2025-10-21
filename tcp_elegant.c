@@ -145,13 +145,10 @@ static void elegant_update_pacing_rate(struct sock *sk) {
     struct elegant *ca = inet_csk_ca(sk);
     u64 rate;
 
-    rate = (u64)tp->mss_cache * ((USEC_PER_SEC / 100) << 3);
-    rate = (rate * ca->inv_beta) >> BETA_SHIFT;
+    rate = (u64)tp->mss_cache * (USEC_PER_SEC << 3);
 
-    if (tp->snd_cwnd < tp->snd_ssthresh / 2)
-        rate *= 2;
-    else
-        rate *= 12 / 10;
+    rate = (rate * (ca->inv_beta+8U)) >> BETA_SHIFT;
+	rate = (rate * (ca->inv_beta+8U)) >> BETA_SHIFT;
 
     rate *= max(tp->snd_cwnd, tp->packets_out);
 
@@ -168,16 +165,18 @@ static inline u32 ema_value(u32 old, u32 new, u32 alpha_shift) {
 
 static inline u64 fast_isqrt(u64 x)
 {
+	u64 r;
+	int i=0;
     if (x < 2)
         return x;
 
     /* Initial guess: 1 << (floor(log2(x)) / 2) */
-    u64 r = 1ULL << ((fls64(x) - 1) >> 1);
+    r = 1ULL << ((fls64(x) - 1) >> 1);
 
     /* two Newton iteration */
-    for (int i=0; i<3; i++)
+    for (i; i<3; i++)
 		r = (r + x / r) >> 1;
-	
+
 	if (r*r>x)
 		r--;
 
@@ -189,10 +188,11 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
+	u32 wwf;
+
 	if (!tcp_is_cwnd_limited(sk))
 		return;
 
-	u32 wwf;
 	if (tcp_in_slow_start(tp)) {
 		wwf = tcp_slow_start(tp, acked);
 		if (!wwf)
@@ -224,11 +224,11 @@ static void elegant_update_rtt(struct sock *sk, const struct rate_sample *rs)
 {
 	struct elegant *ca = inet_csk_ca(sk);
 
-	/* dup ack, no rtt sample */
-	if (rs->rtt_us < 0)
-		return;
-
 	u32 rtt_us = rs->rtt_us;
+
+	/* dup ack, no rtt sample */
+	if (rtt_us < 0)
+		return;
 
 	ca->rtt_curr = rtt_us;
 	if (ca->rtt_curr > ca->rtt_max) {

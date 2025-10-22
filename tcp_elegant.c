@@ -217,7 +217,6 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		}
 	}
 	tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
-	elegant_update_pacing_rate(sk);
 }
 
 static void elegant_update_rtt(struct sock *sk, const struct rate_sample *rs)
@@ -269,6 +268,8 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 		elegant_update_rtt(sk, rs);
 
 	tcp_elegant_round(sk, rs);
+
+	elegant_update_pacing_rate(sk);
 }
 
 static void tcp_elegant_set_state(struct sock *sk, u8 new_state)

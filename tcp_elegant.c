@@ -1,8 +1,8 @@
+#include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/skbuff.h>
 #include <asm/div64.h>
 #include <net/tcp.h>
-#include <linux/minmax.h>
 
 #define BETA_SHIFT	6
 #define BETA_SCALE	(1u<<BETA_SHIFT)
@@ -159,7 +159,6 @@ static void elegant_update_pacing_rate(struct sock *sk) {
 
     rate = (rate * (ca->inv_beta+8U)) >> BETA_SHIFT;
 	rate = (rate * (ca->inv_beta+8U)) >> BETA_SHIFT;
-	rate *= 100
 
     rate *= max(tp->snd_cwnd, tp->packets_out);
 
@@ -310,12 +309,13 @@ static u32 elegant_ssthresh_bdp(const struct sock *sk)
     const struct tcp_sock *tp = tcp_sk(sk);
     const struct elegant *ca = inet_csk_ca(sk);
 
+	u64 bdp;
     u64 bw = minmax_get(&ca->bw);
     if (ca->base_rtt == 0x7fffffff || !bw)
-		return return max(tp->snd_cwnd - calculate_beta_scaled_value(ca->beta, tp->snd_cwnd), 2U);
+		return max(tp->snd_cwnd - calculate_beta_scaled_value(ca->beta, tp->snd_cwnd), 2U);
 
     /* BDP in packets = bw * rtt_min / MSS */
-    u64 bdp = bw * ca->base_rtt;
+    bdp = bw * ca->base_rtt;
 	bdp = (((bdp * CAL_UNIT) >> CAL_SCALE) + BW_UNIT - 1) / BW_UNIT;
 	return max((u32)bdp, 2U);
 }

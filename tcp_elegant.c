@@ -229,8 +229,6 @@ static void elegant_update_bw(struct sock *sk, const struct rate_sample *rs)
     struct elegant *ca = inet_csk_ca(sk);
 
     if (rs->interval_us > 0 && rs->delivered > 0) {
-        u//64 bw = (u64)rs->delivered * BW_UNIT;
-        //do_div(bw, rs->interval_us);
 		u64 bw = DIV_ROUND_UP_ULL((u64)rs->delivered * BW_UNIT, rs->interval_us);
         minmax_running_max(&ca->bw, 10, ca->rtt_cnt, bw);
     }
@@ -285,6 +283,7 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 		elegant_update_rtt(sk, rs);
 
 	tcp_elegant_round(sk, rs);
+	elegant_update_bw(sk, rs);
 
 	elegant_update_pacing_rate(sk);
 }

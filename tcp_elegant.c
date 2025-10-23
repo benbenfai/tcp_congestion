@@ -60,7 +60,7 @@ static void elegant_init(struct sock *sk)
 	ca->round_start = 0;
 	ca->prev_ca_state = TCP_CA_Open;
 	ca->next_rtt_delivered = tp->delivered;
-	minmax_reset(&ca->bw, ca->rtt_cnt, 0);
+	minmax_reset(&ca->bw, ca->cnt_rtt, 0);
 }
 
 static inline u32 calculate_beta_scaled_value(u32 beta, u32 value)
@@ -230,7 +230,7 @@ static void elegant_update_bw(struct sock *sk, const struct rate_sample *rs)
 
     if (rs->interval_us > 0 && rs->delivered > 0) {
 		u64 bw = DIV_ROUND_UP_ULL((u64)rs->delivered * BW_UNIT, rs->interval_us);
-        minmax_running_max(&ca->bw, 10, ca->rtt_cnt, bw);
+        minmax_running_max(&ca->bw, 10, ca->cnt_rtt, bw);
     }
 }
 

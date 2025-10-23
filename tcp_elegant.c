@@ -14,6 +14,12 @@
 #define ELEGANT_UNIT_SQ_SHIFT (2 * ELEGANT_SCALE)        // 12
 #define ELEGANT_UNIT_SQUARED (1ULL << (2 * ELEGANT_SCALE))
 
+#define CAL_SCALE 8
+#define CAL_UNIT (1 << CAL_SCALE)
+
+#define BW_SCALE 24
+#define BW_UNIT (1 << BW_SCALE)
+
 static const u32 lt_intvl_min_rtts = 4;
 static int scale __read_mostly = 96U; // 1.5 * BETA_SCALE
 static int max_scale __read_mostly = 88U;
@@ -35,6 +41,7 @@ struct elegant {
 		prev_ca_state:3,
 		unused:28;
 	u32	next_rtt_delivered;
+	struct minmax bw;
 };
 
 static void elegant_init(struct sock *sk)
@@ -53,6 +60,7 @@ static void elegant_init(struct sock *sk)
 	ca->round_start = 0;
 	ca->prev_ca_state = TCP_CA_Open;
 	ca->next_rtt_delivered = tp->delivered;
+	minmax_reset(&ca->bw, ca->rtt_cnt, 0);
 }
 
 static inline u32 calculate_beta_scaled_value(u32 beta, u32 value)
@@ -216,6 +224,18 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 }
 
+static void elegant_update_bw(struct sock *sk, const struct rate_sample *rs)
+{
+    struct elegant *ca = inet_csk_ca(sk);
+
+    if (rs->interval_us > 0 && rs->delivered > 0) {
+        u//64 bw = (u64)rs->delivered * BW_UNIT;
+        //do_div(bw, rs->interval_us);
+		u64 bw = DIV_ROUND_UP_ULL((u64)rs->delivered * BW_UNIT, rs->interval_us);
+        minmax_running_max(&ca->bw, 10, ca->rtt_cnt, bw);
+    }
+}
+
 static void elegant_update_rtt(struct sock *sk, const struct rate_sample *rs)
 {
 	struct elegant *ca = inet_csk_ca(sk);
@@ -280,6 +300,40 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 		ca->cache_wwf = 0;
 		ca->round_start = 1;
 		ca->prev_ca_state = TCP_CA_Loss;
+	}
+}
+
+static u32 elegant_ssthresh_bdp(const struct sock *sk)
+{
+    const struct tcp_sock *tp = tcp_sk(sk);
+    const struct elegant *ca = inet_csk_ca(sk);
+
+    u64 bw = minmax_get(&ca->bw);
+    if (!bw || !ca->base_rtt)
+		return TCP_INIT_CWND
+        //return max(tp->snd_cwnd >> 1, 2U);
+
+    /* BDP in packets = bw * rtt_min / MSS */
+    u64 bdp = bw * ca->base_rtt;
+	bdp = (((bdp * CAL_UNIT) >> CAL_SCALE) + BW_UNIT - 1) / BW_UNIT;
+	return bdp;
+}
+
+static void tcp_elegant_event(struct sock *sk, enum tcp_ca_event event)
+{
+	struct tcp_sock *tp = tcp_sk(sk);
+
+	switch (event) {
+	case CA_EVENT_COMPLETE_CWR:
+		tp->snd_ssthresh = elegant_ssthresh_bdp(sk);
+		tp->snd_cwnd = tp->snd_ssthresh;
+		break;
+	case CA_EVENT_LOSS:
+		tp->snd_ssthresh = elegant_ssthresh_bdp(sk);
+		break;
+	default:
+		/* don't care */
+		break;
 	}
 }
 

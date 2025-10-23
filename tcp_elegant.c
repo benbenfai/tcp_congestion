@@ -308,9 +308,8 @@ static u32 elegant_ssthresh_bdp(const struct sock *sk)
     const struct elegant *ca = inet_csk_ca(sk);
 
     u64 bw = minmax_get(&ca->bw);
-    if (!bw || !ca->base_rtt)
-		return TCP_INIT_CWND
-        //return max(tp->snd_cwnd >> 1, 2U);
+    if (unlikely(ca->base_rtt == ~0U))
+		return return max(tp->snd_cwnd - calculate_beta_scaled_value(ca->beta, tp->snd_cwnd), 2U);
 
     /* BDP in packets = bw * rtt_min / MSS */
     u64 bdp = bw * ca->base_rtt;
@@ -354,7 +353,8 @@ static struct tcp_congestion_ops tcp_elegant __read_mostly = {
 	.undo_cwnd	= tcp_elegant_undo_cwnd,
 	.cong_avoid	= elegant_cong_avoid,
 	.cong_control	= tcp_elegant_cong_control,
-	.set_state  = tcp_elegant_set_state
+	.set_state  = tcp_elegant_set_state,
+	.cwnd_event	= tcp_elegant_event
 };
 
 static int __init elegant_register(void)

@@ -159,6 +159,7 @@ static void elegant_update_pacing_rate(struct sock *sk) {
 
     rate = (rate * (ca->inv_beta+8U)) >> BETA_SHIFT;
 	rate = (rate * (ca->inv_beta+8U)) >> BETA_SHIFT;
+	raet *= 100;
 
     rate *= max(tp->snd_cwnd, tp->packets_out);
 

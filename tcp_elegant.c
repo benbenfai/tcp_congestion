@@ -328,7 +328,6 @@ static void tcp_elegant_event(struct sock *sk, enum tcp_ca_event event)
 	switch (event) {
 	case CA_EVENT_COMPLETE_CWR:
 		tp->snd_ssthresh = elegant_ssthresh_bdp(sk);
-		tp->snd_cwnd = tp->snd_ssthresh;
 		break;
 	case CA_EVENT_LOSS:
 		tp->snd_ssthresh = elegant_ssthresh_bdp(sk);

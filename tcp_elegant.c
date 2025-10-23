@@ -62,7 +62,7 @@ static void elegant_init(struct sock *sk)
 	ca->prev_ca_state = TCP_CA_Open;
 	ca->sample_idx = 0;
 	ca->next_rtt_delivered = tp->delivered;
-	minmax_reset(&ca->bw, ca->cnt_rtt, 0);
+	minmax_reset(&ca->bw, ca->sample_idx, 0);
 }
 
 static inline u32 calculate_beta_scaled_value(u32 beta, u32 value)
@@ -159,6 +159,7 @@ static void elegant_update_pacing_rate(struct sock *sk) {
 
     rate = (rate * (ca->inv_beta+8U)) >> BETA_SHIFT;
 	rate = (rate * (ca->inv_beta+8U)) >> BETA_SHIFT;
+	rate *= 100
 
     rate *= max(tp->snd_cwnd, tp->packets_out);
 

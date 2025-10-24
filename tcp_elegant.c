@@ -323,12 +323,16 @@ static void tcp_elegant_event(struct sock *sk, enum tcp_ca_event event)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
+	u32 beta_ssthresh = tcp_elegant_ssthresh(sk);
+    u32 bdp_ssthresh = elegant_ssthresh_bdp(sk);
+    u32 selected_ssthresh = max(bdp_ssthresh, beta_ssthresh);
+
 	switch (event) {
 	case CA_EVENT_COMPLETE_CWR:
-		tp->snd_ssthresh = elegant_ssthresh_bdp(sk);
+		tp->snd_ssthresh = selected_ssthresh;
 		break;
 	case CA_EVENT_LOSS:
-		tp->snd_ssthresh = elegant_ssthresh_bdp(sk);
+		tp->snd_ssthresh = selected_ssthresh;
 		break;
 	default:
 		/* don't care */

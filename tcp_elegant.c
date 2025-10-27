@@ -218,13 +218,13 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 				wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT);
 			}
 		}
+		if (wwf > acked) {
+			ca->cache_wwf = wwf;
+		} else {
+			wwf = acked;
+		}
+		tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 	}
-	if (wwf > acked) {
-		ca->cache_wwf = wwf;
-	} else {
-		wwf = acked;
-	}
-	tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 }
 
 static void elegant_update_bw(struct sock *sk, const struct rate_sample *rs)
@@ -280,9 +280,10 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 {
 	struct elegant *ca = inet_csk_ca(sk);
 	
-	if (ca->cnt_rtt == 0 || (rs->interval_us > 0 && rs->delivered > 0))
+	if (ca->cnt_rtt == 0 || (rs->interval_us > 0 && rs->delivered > 0)) {
 		elegant_update_rtt(sk, rs);
 		elegant_update_bw(sk, rs);
+	}
 
 	tcp_elegant_round(sk, rs);
 

@@ -128,13 +128,29 @@ static inline void rtt_reset(struct tcp_sock *tp, struct elegant *ca)
 	ca->sum_rtt = 0;
 }
 
+static u32 elegant_ssthresh_bdp(const struct sock *sk)
+{
+    const struct tcp_sock *tp = tcp_sk(sk);
+    const struct elegant *ca = inet_csk_ca(sk);
+
+	u64 bdp;
+    u64 bw = minmax_get(&ca->bw);
+    if (ca->base_rtt == 0x7fffffff || !bw)
+		return max(tp->snd_cwnd - calculate_beta_scaled_value(ca->beta, tp->snd_cwnd), 2U);
+
+    /* BDP in packets = bw * rtt_min / MSS */
+    bdp = bw * ca->base_rtt;
+	bdp = (((bdp * CAL_UNIT) >> CAL_SCALE) + BW_UNIT - 1) / BW_UNIT;
+	return max((u32)bdp, 2U);
+}
+
 static void update_params(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
 	u32 avg_delay_val = avg_delay(ca);
-	u32 thresh = win_thresh + ilog2((avg_delay_val / ca->base_rtt)+1) + ilog2((avg_delay_val / 1000) + 1);
+	u32 thresh = win_thresh + ilog2((avg_delay_val / ca->base_rtt) + 1) + ilog2(elegant_ssthresh_bdp(sk) + 1);
 
     if (tp->snd_cwnd < thresh) {
         ca->beta = BETA_BASE;
@@ -153,13 +169,20 @@ static void update_params(struct sock *sk)
 static void elegant_update_pacing_rate(struct sock *sk) {
     const struct tcp_sock *tp = tcp_sk(sk);
     struct elegant *ca = inet_csk_ca(sk);
+	u32 scale = 1U;
     u64 rate;
 
     rate = (u64)tp->mss_cache * ((USEC_PER_SEC/100) << 3);
 
-    rate = (rate * (ca->inv_beta+8U)) >> BETA_SHIFT;
-	rate = (rate * (ca->inv_beta+8U)) >> BETA_SHIFT;
-	rate *= 100;
+	scale = (scale * (ca->inv_beta+8U)) >> BETA_SHIFT;
+	scale = (scale * (ca->inv_beta+8U)) >> BETA_SHIFT;
+	scale *= 100;
+	
+	if (tp->snd_cwnd < tp->snd_ssthresh / 2) {
+		scale = max(200U, scale);
+	}
+	
+	rate *= scale;
 
     rate *= max(tp->snd_cwnd, tp->packets_out);
 
@@ -305,36 +328,24 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 	}
 }
 
-static u32 elegant_ssthresh_bdp(const struct sock *sk)
+static u32 selected_ssthresh(struct sock *sk)
 {
-    const struct tcp_sock *tp = tcp_sk(sk);
-    const struct elegant *ca = inet_csk_ca(sk);
+	u32 beta_ssthresh = tcp_elegant_ssthresh(sk);
+    u32 bdp_ssthresh = elegant_ssthresh_bdp(sk);
 
-	u64 bdp;
-    u64 bw = minmax_get(&ca->bw);
-    if (ca->base_rtt == 0x7fffffff || !bw)
-		return max(tp->snd_cwnd - calculate_beta_scaled_value(ca->beta, tp->snd_cwnd), 2U);
-
-    /* BDP in packets = bw * rtt_min / MSS */
-    bdp = bw * ca->base_rtt;
-	bdp = (((bdp * CAL_UNIT) >> CAL_SCALE) + BW_UNIT - 1) / BW_UNIT;
-	return max((u32)bdp, 2U);
+    return max(bdp_ssthresh, beta_ssthresh);
 }
 
 static void tcp_elegant_event(struct sock *sk, enum tcp_ca_event event)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	u32 beta_ssthresh = tcp_elegant_ssthresh(sk);
-    u32 bdp_ssthresh = elegant_ssthresh_bdp(sk);
-    u32 selected_ssthresh = max(bdp_ssthresh, beta_ssthresh);
-
 	switch (event) {
 	case CA_EVENT_COMPLETE_CWR:
-		tp->snd_ssthresh = selected_ssthresh;
+		tp->snd_ssthresh = selected_ssthresh(sk);
 		break;
 	case CA_EVENT_LOSS:
-		tp->snd_ssthresh = selected_ssthresh;
+		tp->snd_ssthresh = selected_ssthresh(sk);
 		break;
 	default:
 		/* don't care */

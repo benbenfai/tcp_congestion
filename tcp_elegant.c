@@ -2,6 +2,9 @@
 #include <linux/module.h>
 #include <linux/skbuff.h>
 #include <asm/div64.h>
+#include <linux/win_minmax.h>
+#include <linux/bitops.h>
+#include <linux/log2.h>
 #include <net/tcp.h>
 
 #define BETA_SHIFT	6
@@ -320,7 +323,7 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 
 	if (new_state == TCP_CA_Loss) {
 		ca->rtt_max = ca->rtt_curr;
-		ca->base_rtt == 0x7fffffff;
+		ca->base_rtt = 0x7fffffff;
 		rtt_reset(tp, ca);
 		ca->cache_wwf = 0;
 		ca->round_start = 1;

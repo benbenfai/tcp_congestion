@@ -172,10 +172,8 @@ static void update_params(struct sock *sk)
 static void elegant_update_pacing_rate(struct sock *sk) {
     const struct tcp_sock *tp = tcp_sk(sk);
     struct elegant *ca = inet_csk_ca(sk);
-	u32 scale = 1U;
-    u64 rate;
-
-    rate = (u64)tp->mss_cache * ((USEC_PER_SEC/100) << 3);
+	u64 scale = 1U;
+    u64 rate = (u64)tp->mss_cache * ((USEC_PER_SEC/100) << 3);
 
 	scale = (scale * (ca->inv_beta+8U)) >> BETA_SHIFT;
 	scale = (scale * (ca->inv_beta+8U)) >> BETA_SHIFT;

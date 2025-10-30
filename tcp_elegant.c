@@ -217,7 +217,7 @@ static inline u64 fast_isqrt(u64 x)
     /* Initial guess: 1 << (floor(log2(x)) / 2) */
     r = 1ULL << ((fls64(x) - 1) >> 1);
 
-    /* two Newton iteration */
+    /* three Newton iteration */
     for (i; i<3; i++)
 		r = (r + x / r) >> 1;
 
@@ -282,12 +282,11 @@ static void elegant_update_rtt(struct sock *sk, const struct rate_sample *rs)
 	if (rtt_us < 0)
 		return;
 
-	if (rtt_us > ca->round_rtt_max) {
+	if (rtt_us > ca->round_rtt_max)
 		ca->round_rtt_max = rtt_us;
-	}
 
 	/* keep track of minimum RTT seen so far */
-	if (ca->round_base_rtt > rtt_us)
+	if (rtt_us < ca->round_base_rtt)
 		ca->round_base_rtt = rtt_us;
 
 	ca->cnt_rtt++;

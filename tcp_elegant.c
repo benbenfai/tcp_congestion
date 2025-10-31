@@ -25,19 +25,18 @@
 
 static const u32 lt_intvl_min_rtts = 4;
 static int scale __read_mostly = 96U; // 1.5 * BETA_SCALE
-static int max_scale __read_mostly = 88U;
 
 static int win_thresh __read_mostly = 15; /* Increased threshold for adaptive alpha/beta */
 module_param(win_thresh, int, 0);
 MODULE_PARM_DESC(win_thresh, "Window threshold for starting adaptive sizing");
 
 struct elegant {
-	u32	rtt_curr;
+	u64 sum_rtt;               /* sum of RTTs in last round */
+    u32 cnt_rtt;            /* samples in this RTT */
 	u32	round_rtt_max;
 	u32	round_base_rtt;	/* min of all rtt in usec */
 	u32 round_bw;
-	u64 sum_rtt;               /* sum of RTTs in last round */
-    u32 cnt_rtt;            /* samples in this RTT */
+	u32	rtt_curr;
     u32	rtt_max;
     u32	base_rtt;	/* min of all rtt in usec */
 	u32 bw;
@@ -56,18 +55,18 @@ static void elegant_init(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
-	ca->rtt_curr = 0;
-	ca->round_rtt_max = 0;
-	ca->round_base_rtt = 0x7fffffff;
-	ca->round_bw = 0;
 	ca->sum_rtt = 0;
 	ca->cnt_rtt = 0;
+	ca->round_rtt_max = 0;
+	ca->round_base_rtt = UINT_MAX;
+	ca->round_bw = 0;
+	ca->rtt_curr = 0;
 	ca->rtt_max = 0;
-	ca->base_rtt = 0x7fffffff;
+	ca->base_rtt = UINT_MAX;
 	ca->bw = 0;
 	ca->cache_wwf = 0;
 	ca->beta = BETA_MIN;
-	ca->inv_beta = max_scale; // 96 - 8 = 88 (1.375)
+	ca->inv_beta = scale - ca->beta; // 96 - 8 = 88 (1.375)
 	ca->round_start = 0;
 	ca->prev_ca_state = TCP_CA_Open;
 	ca->sample_idx = 0;
@@ -136,8 +135,8 @@ static u32 beta(u32 da, u32 dm)
 
 static inline void rtt_reset(struct tcp_sock *tp, struct elegant *ca)
 {
-	ca->cnt_rtt = 0;
 	ca->sum_rtt = 0;
+	ca->cnt_rtt = 0;
 }
 
 static u32 elegant_ssthresh_bdp(const struct sock *sk)
@@ -147,7 +146,7 @@ static u32 elegant_ssthresh_bdp(const struct sock *sk)
 
 	u64 bdp;
     u64 bw = ca->bw;
-    if (ca->base_rtt == 0x7fffffff || !bw)
+    if (ca->base_rtt == UINT_MAX || !bw)
 		return max(tp->snd_cwnd - calculate_beta_scaled_value(ca->beta, tp->snd_cwnd), 2U);
 
     /* BDP in packets = bw * rtt_min / MSS */
@@ -166,7 +165,7 @@ static void update_params(struct sock *sk)
 
     if (tp->snd_cwnd < thresh) {
         ca->beta = BETA_BASE;
-		ca->inv_beta = max_scale;
+		ca->inv_beta = scale - ca->beta;
     } else if (ca->cnt_rtt > 0) {
 		u32 dm = max_delay(ca);
 		u32 da = avg_delay_val;
@@ -181,19 +180,16 @@ static void update_params(struct sock *sk)
 static void elegant_update_pacing_rate(struct sock *sk) {
     const struct tcp_sock *tp = tcp_sk(sk);
     struct elegant *ca = inet_csk_ca(sk);
-	u64 scale = 1ULL;
-    u64 rate = (u64)tp->mss_cache * ((USEC_PER_SEC/100) << 3);
 
-	scale = (scale * (ca->inv_beta+8U)) >> BETA_SHIFT;
-	scale = (scale * (ca->inv_beta+8U)) >> BETA_SHIFT;
-	scale *= 100;
-	
-	if (tp->snd_cwnd < tp->snd_ssthresh / 2) {
+    u64 rate = (u64)tp->mss_cache * ((USEC_PER_SEC/100) << 3);
+	u64 temp = (u64)ca->inv_beta + 8U;	
+    u64 scale = (temp * temp * 100ULL) >> (BETA_SHIFT * 2);
+
+	if (tp->snd_cwnd < (tp->snd_ssthresh >> 1)) {
 		scale = max(200ULL, scale);
 	}
-	
-	rate *= scale;
 
+	rate *= scale;
     rate *= max(tp->snd_cwnd, tp->packets_out);
 
     if (likely(tp->srtt_us))
@@ -265,7 +261,7 @@ static void elegant_update_bw(struct sock *sk, const struct rate_sample *rs)
     struct elegant *ca = inet_csk_ca(sk);
 
 	ca->round_bw = DIV_ROUND_UP_ULL((u64)rs->delivered * BW_UNIT, rs->interval_us);
-	if (ca->bw < ca->round_bw)
+	if (ca->round_bw > ca->bw)
 		ca->bw = ca->round_bw;
     ca->sample_idx++;
 	if (ca->bw == 0 || ca->sample_idx >= 10) {
@@ -284,15 +280,15 @@ static void elegant_update_rtt(struct sock *sk, const struct rate_sample *rs)
 	if (rtt_us < 0)
 		return;
 
+	ca->sum_rtt += rtt_us;
+	ca->cnt_rtt++;
+
 	if (rtt_us > ca->round_rtt_max)
 		ca->round_rtt_max = rtt_us;
 
 	/* keep track of minimum RTT seen so far */
 	if (rtt_us < ca->round_base_rtt)
 		ca->round_base_rtt = rtt_us;
-
-	ca->cnt_rtt++;
-	ca->sum_rtt += rtt_us;
 }
 
 static void tcp_elegant_round(struct sock *sk, const struct rate_sample *rs)
@@ -307,16 +303,16 @@ static void tcp_elegant_round(struct sock *sk, const struct rate_sample *rs)
 
 	/* See if we've reached the next RTT */
 	if (rs->interval_us > 0 && !before(rs->prior_delivered, ca->next_rtt_delivered)) {
-		ca->next_rtt_delivered = tp->delivered;
 		update_params(sk);
-		if (ca->round_base_rtt != 0x7fffffff) {
+		if (ca->round_base_rtt != UINT_MAX) {
 			ca->rtt_max = ca->round_rtt_max;
 			ca->base_rtt = ca->round_base_rtt;
 		}
 		ca->round_rtt_max = 0;
-		ca->round_base_rtt = 0x7fffffff;
+		ca->round_base_rtt = UINT_MAX;
 		elegant_update_bw(sk, rs);
 		ca->round_start = 1;
+		ca->next_rtt_delivered = tp->delivered;
 	}
 }
 

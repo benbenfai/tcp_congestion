@@ -35,7 +35,6 @@ struct elegant {
     u32 cnt_rtt;            /* samples in this RTT */
 	u32	round_rtt_max;
 	u32	round_base_rtt;	/* min of all rtt in usec */
-	u32 round_bw;
 	u32	rtt_curr;
     u32	rtt_max;
     u32	base_rtt;	/* min of all rtt in usec */
@@ -47,7 +46,6 @@ struct elegant {
 		prev_ca_state:3,
 		sample_idx:28;
 	u32	next_rtt_delivered;
-
 };
 
 static void elegant_init(struct sock *sk)
@@ -59,7 +57,6 @@ static void elegant_init(struct sock *sk)
 	ca->cnt_rtt = 0;
 	ca->round_rtt_max = 0;
 	ca->round_base_rtt = UINT_MAX;
-	ca->round_bw = 0;
 	ca->rtt_curr = 0;
 	ca->rtt_max = 0;
 	ca->base_rtt = UINT_MAX;
@@ -260,14 +257,14 @@ static void elegant_update_bw(struct sock *sk, const struct rate_sample *rs)
 {
     struct elegant *ca = inet_csk_ca(sk);
 
-	ca->round_bw = DIV_ROUND_UP_ULL((u64)rs->delivered * BW_UNIT, rs->interval_us);
-	if (ca->round_bw > ca->bw)
-		ca->bw = ca->round_bw;
-    ca->sample_idx++;
-	if (ca->bw == 0 || ca->sample_idx >= 10) {
+	u32 bw = DIV_ROUND_UP_ULL((u64)rs->delivered * BW_UNIT, rs->interval_us);
+	if (bw > ca->bw)
+		ca->bw = bw;
+	if (ca->sample_idx >= 10) {
 		ca->bw = 0;
 		ca->sample_idx = 0;
 	}
+    ca->sample_idx++;
 }
 
 static void elegant_update_rtt(struct sock *sk, const struct rate_sample *rs)

@@ -258,11 +258,11 @@ static void elegant_update_bw(struct sock *sk, const struct rate_sample *rs)
     struct elegant *ca = inet_csk_ca(sk);
 
 	u32 bw = DIV_ROUND_UP_ULL((u64)rs->delivered * BW_UNIT, rs->interval_us);
-	if (bw > ca->bw)
-		ca->bw = bw;
 	if (ca->sample_idx >= 10) {
-		ca->bw = 0;
+		ca->bw = bw;
 		ca->sample_idx = 0;
+	} else if (bw > ca->bw) {
+		ca->bw = bw;
 	}
     ca->sample_idx++;
 }

@@ -17,13 +17,9 @@
 #define ELEGANT_UNIT_SQ_SHIFT (2 * ELEGANT_SCALE)        // 12
 #define ELEGANT_UNIT_SQUARED (1ULL << (2 * ELEGANT_SCALE))
 
-#define CAL_SCALE 8
-#define CAL_UNIT (1 << CAL_SCALE)
-
 #define BW_SCALE 24
 #define BW_UNIT (1 << BW_SCALE)
 
-static const u32 lt_intvl_min_rtts = 4;
 static int scale __read_mostly = 96U; // 1.5 * BETA_SCALE
 
 static int win_thresh __read_mostly = 15; /* Increased threshold for adaptive alpha/beta */
@@ -136,16 +132,18 @@ static u32 elegant_ssthresh_bdp(const struct sock *sk)
 {
     const struct tcp_sock *tp = tcp_sk(sk);
     const struct elegant *ca = inet_csk_ca(sk);
-
-	u64 bdp;
+    u64 bdp;
     u64 bw = ca->bw;
-    if (ca->base_rtt == UINT_MAX || !bw)
-		return max(tp->snd_cwnd - calculate_beta_scaled_value(ca->beta, tp->snd_cwnd), 2U);
+    u32 mss = tp->mss_cache ? tp->mss_cache : 1460;
 
-    /* BDP in packets = bw * rtt_min / MSS */
+    if (ca->base_rtt == UINT_MAX || !bw)
+        return tcp_elegant_ssthresh(sk);
+
     bdp = bw * ca->base_rtt;
-	bdp = (((bdp * CAL_UNIT) >> CAL_SCALE) + BW_UNIT - 1) / BW_UNIT;
-	return max((u32)bdp, 2U);
+    bdp = div64_u64(bdp + BW_UNIT - 1, BW_UNIT);
+    bdp = div64_u64(bdp + mss - 1, mss);
+
+    return max((u32)bdp, 2U);
 }
 
 static void update_params(struct sock *sk)

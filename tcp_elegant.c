@@ -128,7 +128,7 @@ static inline void rtt_reset(struct tcp_sock *tp, struct elegant *ca)
 	ca->cnt_rtt = 0;
 }
 
-static u32 elegant_ssthresh_bdp(const struct sock *sk)
+static u32 elegant_ssthresh_bdp(struct sock *sk)
 {
     const struct tcp_sock *tp = tcp_sk(sk);
     const struct elegant *ca = inet_csk_ca(sk);
@@ -140,8 +140,8 @@ static u32 elegant_ssthresh_bdp(const struct sock *sk)
         return tcp_elegant_ssthresh(sk);
 
     bdp = bw * ca->base_rtt;
-    bdp = div64_u64(bdp + BW_UNIT - 1, BW_UNIT);
-    bdp = div64_u64(bdp + mss - 1, mss);
+    do_div(bdp, BW_UNIT);
+    do_div(bdp, mss);
 
     return max((u32)bdp, 2U);
 }

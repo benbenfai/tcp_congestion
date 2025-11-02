@@ -42,9 +42,7 @@ struct elegant {
 	u32	cache_wwf;
 	u32 beta;  				 /* multiplicative decrease factor */
 	u32 inv_beta;
-    u32 round_start:1,
-		prev_ca_state:3,
-		sample_idx:28;
+    u32 round_start:;
 	u32	next_rtt_delivered;
 };
 
@@ -65,8 +63,6 @@ static void elegant_init(struct sock *sk)
 	ca->beta = BETA_MIN;
 	ca->inv_beta = scale - ca->beta; // 96 - 8 = 88 (1.375)
 	ca->round_start = 0;
-	ca->prev_ca_state = TCP_CA_Open;
-	ca->sample_idx = 0;
 	ca->next_rtt_delivered = tp->delivered;
 }
 
@@ -257,14 +253,14 @@ static void elegant_update_bw(struct sock *sk, const struct rate_sample *rs)
 {
     struct elegant *ca = inet_csk_ca(sk);
 
-	u32 bw = DIV_ROUND_UP_ULL((u64)rs->delivered * BW_UNIT, rs->interval_us);
-	if (ca->sample_idx >= 10) {
-		ca->bw = bw;
-		ca->sample_idx = 0;
-	} else if (bw > ca->bw) {
-		ca->bw = bw;
+	u64 sample = DIV_ROUND_UP_ULL((u64)rs->delivered * BW_UNIT, rs->interval_us);
+	if (!ca->bw) {
+		ca->bw = sample;
+	} else if (sample > ca->bw) {
+		ca->bw = (ca->bw * 7 + sample) >> 3;
+	} else {
+		ca->bw = (ca->bw + sample) >> 1;
 	}
-    ca->sample_idx++;
 }
 
 static void elegant_update_rtt(struct sock *sk, const struct rate_sample *rs)
@@ -294,7 +290,6 @@ static void tcp_elegant_round(struct sock *sk, const struct rate_sample *rs)
 	struct elegant *ca = inet_csk_ca(sk);
 
 	ca->round_start = 0;
-	ca->prev_ca_state = inet_csk(sk)->icsk_ca_state;
 	if (rs->interval_us <= 0 || !rs->acked_sacked)
 		return; /* Not a valid observation */
 
@@ -334,7 +329,6 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 		rtt_reset(tp, ca);
 		ca->cache_wwf = 0;
 		ca->round_start = 1;
-		ca->prev_ca_state = TCP_CA_Loss;
 	}
 }
 

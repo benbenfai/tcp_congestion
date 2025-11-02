@@ -42,7 +42,7 @@ struct elegant {
 	u32	cache_wwf;
 	u32 beta;  				 /* multiplicative decrease factor */
 	u32 inv_beta;
-    u32 round_start:;
+    u32 round_start;
 	u32	next_rtt_delivered;
 };
 

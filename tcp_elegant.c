@@ -228,15 +228,13 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		tcp_slow_start(tp, acked);
 	} else {
 		wwf = ca->cache_wwf;
-		if (ca->round_start || wwf == 0) {
+		if ((ca->round_start || wwf == 0) && ca->round_base_rtt != UINT_MAX) {
 			u32 rtt = ema_value(ca->rtt_curr, ca->base_rtt, 3);
-			if (rtt > 0) {
-				u64 wwf64 = tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT;
-				div_u64(wwf64, rtt);
-				wwf64 = fast_isqrt(wwf64);
-				wwf = wwf64 >> ELEGANT_SCALE;
-				wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT);
-			}
+			u64 wwf64 = tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT;
+			div_u64(wwf64, rtt);
+			wwf64 = fast_isqrt(wwf64);
+			wwf = wwf64 >> ELEGANT_SCALE;
+			wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT);
 		}
 		if (wwf > acked) {
 			ca->cache_wwf = wwf;
@@ -254,10 +252,8 @@ static void elegant_update_bw(struct sock *sk, const struct rate_sample *rs)
 	u64 sample = DIV_ROUND_UP_ULL((u64)rs->delivered * BW_UNIT, rs->interval_us);
 	if (!ca->bw) {
 		ca->bw = sample;
-	} else if (sample > ca->bw) {
-		ca->bw = (ca->bw * 7 + sample) >> 3;
 	} else {
-		ca->bw = (ca->bw + sample) >> 1;
+		ca->bw = (ca->bw * 7 + sample) >> 3;
 	}
 }
 
@@ -297,9 +293,9 @@ static void tcp_elegant_round(struct sock *sk, const struct rate_sample *rs)
 		if (ca->round_base_rtt != UINT_MAX) {
 			ca->rtt_max = ca->round_rtt_max;
 			ca->base_rtt = ca->round_base_rtt;
+			ca->round_rtt_max = 0;
+			ca->round_base_rtt = UINT_MAX;
 		}
-		ca->round_rtt_max = 0;
-		ca->round_base_rtt = UINT_MAX;
 		elegant_update_bw(sk, rs);
 		ca->round_start = 1;
 		ca->next_rtt_delivered = tp->delivered;

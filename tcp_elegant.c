@@ -189,11 +189,6 @@ static void elegant_update_pacing_rate(struct sock *sk) {
     WRITE_ONCE(sk->sk_pacing_rate, min_t(u64, rate, sk->sk_max_pacing_rate));
 }
 
-static inline u32 ema_value(u32 old, u32 new, u32 alpha_shift) {
-	//(e.g., shift=3 for 1/8)
-    return (old * ((1<<alpha_shift)-1) + new) >> alpha_shift;
-}
-
 static inline u64 fast_isqrt(u64 x)
 {
 	u64 r;
@@ -229,7 +224,7 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	} else {
 		wwf = ca->cache_wwf;
 		if ((ca->round_start || wwf == 0) && ca->round_base_rtt != UINT_MAX) {
-			u32 rtt = ema_value(ca->rtt_curr, ca->base_rtt, 3);
+			u32 rtt = (ca->rtt_curr * 7 + ca->base_rtt) >> 3;
 			u64 wwf64 = tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT;
 			div_u64(wwf64, rtt);
 			wwf64 = fast_isqrt(wwf64);
@@ -252,9 +247,11 @@ static void elegant_update_bw(struct sock *sk, const struct rate_sample *rs)
 	u64 sample = DIV_ROUND_UP_ULL((u64)rs->delivered * BW_UNIT, rs->interval_us);
 	if (!ca->bw) {
 		ca->bw = sample;
-	} else {
-		ca->bw = (ca->bw * 7 + sample) >> 3;
-	}
+	} else if (sample > ca->bw) {
+        ca->bw = (ca->bw * 7 + sample) >> 3;
+    } else {
+        ca->bw = (ca->bw + sample) >> 1;
+    }
 }
 
 static void elegant_update_rtt(struct sock *sk, const struct rate_sample *rs)

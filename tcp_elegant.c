@@ -223,7 +223,7 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		tcp_slow_start(tp, acked);
 	} else {
 		wwf = ca->cache_wwf;
-		if ((ca->round_start || wwf == 0) && ca->round_base_rtt != UINT_MAX) {
+		if ((ca->round_start || wwf == 0) && ca->base_rtt != UINT_MAX) {
 			u32 rtt = (ca->rtt_curr * 7 + ca->base_rtt) >> 3;
 			u64 wwf64 = tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT;
 			div_u64(wwf64, rtt);
@@ -247,8 +247,6 @@ static void elegant_update_bw(struct sock *sk, const struct rate_sample *rs)
 	u64 sample = DIV_ROUND_UP_ULL((u64)rs->delivered * BW_UNIT, rs->interval_us);
 	if (!ca->bw) {
 		ca->bw = sample;
-	} else if (sample > ca->bw) {
-        ca->bw = (ca->bw * 7 + sample) >> 3;
     } else {
         ca->bw = (ca->bw + sample) >> 1;
     }
@@ -286,10 +284,10 @@ static void tcp_elegant_round(struct sock *sk, const struct rate_sample *rs)
 
 	/* See if we've reached the next RTT */
 	if (rs->interval_us > 0 && !before(rs->prior_delivered, ca->next_rtt_delivered)) {
-		update_params(sk);
 		if (ca->round_base_rtt != UINT_MAX) {
 			ca->rtt_max = ca->round_rtt_max;
 			ca->base_rtt = ca->round_base_rtt;
+			update_params(sk);
 			ca->round_rtt_max = 0;
 			ca->round_base_rtt = UINT_MAX;
 		}

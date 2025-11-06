@@ -223,7 +223,7 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		tcp_slow_start(tp, acked);
 	} else {
 		wwf = ca->cache_wwf;
-		if ((ca->round_start || wwf == 0) && ca->base_rtt != UINT_MAX) {
+		if ((ca->round_start || wwf == 0) && ca->round_base_rtt != UINT_MAX) {
 			u32 rtt = (ca->rtt_curr * 7 + ca->base_rtt) >> 3;
 			u64 wwf64 = tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT;
 			div_u64(wwf64, rtt);
@@ -316,6 +316,7 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 
 	if (new_state == TCP_CA_Loss) {
 		rtt_reset(tp, ca);
+		ca->round_base_rtt = UINT_MAX;
 		ca->cache_wwf = 0;
 		ca->round_start = 1;
 	}

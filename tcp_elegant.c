@@ -29,11 +29,11 @@ MODULE_PARM_DESC(win_thresh, "Window threshold for starting adaptive sizing");
 struct elegant {
 	u64 sum_rtt;               /* sum of RTTs in last round */
     u32 cnt_rtt;            /* samples in this RTT */
-	u32	round_rtt_max;
 	u32	round_base_rtt;	/* min of all rtt in usec */
-	u32	rtt_curr;
+	u32	round_rtt_max;
+	u32	base_rtt;	/* min of all rtt in usec */
     u32	rtt_max;
-    u32	base_rtt;	/* min of all rtt in usec */
+	u32	rtt_curr;
 	u32 bw;
 	u32	cache_wwf;
 	u32 beta;  				 /* multiplicative decrease factor */
@@ -49,11 +49,11 @@ static void elegant_init(struct sock *sk)
 
 	ca->sum_rtt = 0;
 	ca->cnt_rtt = 0;
-	ca->round_rtt_max = 0;
 	ca->round_base_rtt = UINT_MAX;
-	ca->rtt_curr = 0;
-	ca->rtt_max = 0;
+	ca->round_rtt_max = 0;
 	ca->base_rtt = UINT_MAX;
+	ca->rtt_max = 0;
+	ca->rtt_curr = 0;
 	ca->bw = 0;
 	ca->cache_wwf = 0;
 	ca->beta = BETA_MIN;
@@ -223,10 +223,9 @@ static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		tcp_slow_start(tp, acked);
 	} else {
 		wwf = ca->cache_wwf;
-		if ((ca->round_start || wwf == 0) && ca->round_base_rtt != UINT_MAX) {
-			u32 rtt = (ca->rtt_curr * 7 + ca->base_rtt) >> 3;
+		if (ca->round_start || wwf == 0) {
 			u64 wwf64 = tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT;
-			div_u64(wwf64, rtt);
+			div_u64(wwf64, ca->rtt_curr);
 			wwf64 = fast_isqrt(wwf64);
 			wwf = wwf64 >> ELEGANT_SCALE;
 			wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT);
@@ -265,12 +264,12 @@ static void elegant_update_rtt(struct sock *sk, const struct rate_sample *rs)
 	ca->sum_rtt += rtt_us;
 	ca->cnt_rtt++;
 
-	if (rtt_us > ca->round_rtt_max)
-		ca->round_rtt_max = rtt_us;
-
 	/* keep track of minimum RTT seen so far */
 	if (rtt_us < ca->round_base_rtt)
 		ca->round_base_rtt = rtt_us;
+
+	if (rtt_us > ca->round_rtt_max)
+		ca->round_rtt_max = rtt_us;
 }
 
 static void tcp_elegant_round(struct sock *sk, const struct rate_sample *rs)
@@ -285,8 +284,8 @@ static void tcp_elegant_round(struct sock *sk, const struct rate_sample *rs)
 	/* See if we've reached the next RTT */
 	if (rs->interval_us > 0 && !before(rs->prior_delivered, ca->next_rtt_delivered)) {
 		if (ca->round_base_rtt != UINT_MAX) {
-			ca->rtt_max = ca->round_rtt_max;
 			ca->base_rtt = ca->round_base_rtt;
+			ca->rtt_max = ca->round_rtt_max;
 			update_params(sk);
 			ca->round_rtt_max = 0;
 			ca->round_base_rtt = UINT_MAX;
@@ -316,7 +315,6 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 
 	if (new_state == TCP_CA_Loss) {
 		rtt_reset(tp, ca);
-		ca->round_base_rtt = UINT_MAX;
 		ca->cache_wwf = 0;
 		ca->round_start = 1;
 	}

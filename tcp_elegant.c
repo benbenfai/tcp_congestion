@@ -62,17 +62,12 @@ static void elegant_init(struct sock *sk)
 	ca->next_rtt_delivered = tp->delivered;
 }
 
-static inline u32 calculate_beta_scaled_value(u32 beta, u32 value)
-{
-    return (value * beta) >> BETA_SHIFT;
-}
-
 static u32 tcp_elegant_ssthresh(struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
-	return max(tp->snd_cwnd - calculate_beta_scaled_value(ca->beta, tp->snd_cwnd), 2U);
+	return max(tp->snd_cwnd - ((ca->beta * tp->snd_cwnd)>> BETA_SHIFT), 2U);
 }
 
 /* Maximum queuing delay */
@@ -145,14 +140,13 @@ static u32 elegant_ssthresh_bdp(struct sock *sk)
 
     return max((u32)bdp, 2U);
 }
-
 static void update_params(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
 	u32 avg_delay_val = avg_delay(ca);
-	u32 thresh = win_thresh + ilog2((avg_delay_val / ca->base_rtt) + 1) + ilog2(elegant_ssthresh_bdp(sk) + 1);
+	u32 thresh = win_thresh + ilog2(elegant_ssthresh_bdp(sk));
 
     if (tp->snd_cwnd < thresh) {
         ca->beta = BETA_BASE;
@@ -299,7 +293,7 @@ static void tcp_elegant_round(struct sock *sk, const struct rate_sample *rs)
 static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *rs)
 {
 	struct elegant *ca = inet_csk_ca(sk);
-	
+
 	if (ca->cnt_rtt == 0 || (rs->interval_us > 0 && rs->delivered > 0))
 		elegant_update_rtt(sk, rs);
 
@@ -315,17 +309,10 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 
 	if (new_state == TCP_CA_Loss) {
 		rtt_reset(tp, ca);
+		ca->round_base_rtt = UINT_MAX;
 		ca->cache_wwf = 0;
 		ca->round_start = 1;
 	}
-}
-
-static u32 selected_ssthresh(struct sock *sk)
-{
-	u32 beta_ssthresh = tcp_elegant_ssthresh(sk);
-    u32 bdp_ssthresh = elegant_ssthresh_bdp(sk);
-
-    return max(bdp_ssthresh, beta_ssthresh);
 }
 
 static void tcp_elegant_event(struct sock *sk, enum tcp_ca_event event)
@@ -334,10 +321,10 @@ static void tcp_elegant_event(struct sock *sk, enum tcp_ca_event event)
 
 	switch (event) {
 	case CA_EVENT_COMPLETE_CWR:
-		tp->snd_ssthresh = selected_ssthresh(sk);
+		tp->snd_ssthresh = max(tp->snd_ssthresh, elegant_ssthresh_bdp(sk));
 		break;
 	case CA_EVENT_LOSS:
-		tp->snd_ssthresh = selected_ssthresh(sk);
+		tp->snd_ssthresh = max(tp->snd_ssthresh, elegant_ssthresh_bdp(sk));
 		break;
 	default:
 		/* don't care */

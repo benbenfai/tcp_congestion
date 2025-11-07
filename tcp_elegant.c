@@ -287,8 +287,8 @@ static void tcp_elegant_round(struct sock *sk, const struct rate_sample *rs)
 			ca->base_rtt = ca->round_base_rtt;
 			ca->rtt_max = ca->round_rtt_max;
 			update_params(sk);
-			ca->round_rtt_max = 0;
 			ca->round_base_rtt = UINT_MAX;
+			ca->round_rtt_max = 0;
 		}
 		elegant_update_bw(sk, rs);
 		ca->round_start = 1;

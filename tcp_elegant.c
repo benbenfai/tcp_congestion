@@ -140,6 +140,7 @@ static u32 elegant_ssthresh_bdp(struct sock *sk)
 
     return max((u32)bdp, 2U);
 }
+
 static void update_params(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -318,13 +319,18 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 static void tcp_elegant_event(struct sock *sk, enum tcp_ca_event event)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
+	u32 bdp;
 
 	switch (event) {
 	case CA_EVENT_COMPLETE_CWR:
-		tp->snd_ssthresh = max(tp->snd_ssthresh, elegant_ssthresh_bdp(sk));
+		bdp = elegant_ssthresh_bdp(sk);
+		if (bdp > tp->snd_ssthresh)
+			tp->snd_ssthresh = bdp;
 		break;
 	case CA_EVENT_LOSS:
-		tp->snd_ssthresh = max(tp->snd_ssthresh, elegant_ssthresh_bdp(sk));
+		bdp = elegant_ssthresh_bdp(sk);
+		if (bdp > tp->snd_ssthresh)
+			tp->snd_ssthresh = bdp;
 		break;
 	default:
 		/* don't care */

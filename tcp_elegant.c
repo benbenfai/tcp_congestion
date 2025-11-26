@@ -204,12 +204,13 @@ static inline u64 fast_isqrt(u64 x)
     return r;
 }
 
-static void elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
+static void elegant_cong_avoid(struct sock *sk, const struct rate_sample *rs)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
 	u32 wwf;
+	u32 acked = rs->acked_sacked;
 
 	if (!tcp_is_cwnd_limited(sk))
 		return;
@@ -299,6 +300,7 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 		elegant_update_rtt(sk, rs);
 
 	tcp_elegant_round(sk, rs);
+	elegant_cong_avoid(sk, rs);
 
 	elegant_update_pacing_rate(sk);
 }
@@ -313,6 +315,7 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 		ca->round_base_rtt = UINT_MAX;
 		ca->cache_wwf = 0;
 		ca->round_start = 1;
+		tp->snd_cwnd = tcp_packets_in_flight(tp) + 1;
 	}
 }
 
@@ -323,11 +326,6 @@ static void tcp_elegant_event(struct sock *sk, enum tcp_ca_event event)
 
 	switch (event) {
 	case CA_EVENT_COMPLETE_CWR:
-		bdp = elegant_ssthresh_bdp(sk);
-		if (bdp > tp->snd_ssthresh)
-			tp->snd_ssthresh = bdp;
-		break;
-	case CA_EVENT_LOSS:
 		bdp = elegant_ssthresh_bdp(sk);
 		if (bdp > tp->snd_ssthresh)
 			tp->snd_ssthresh = bdp;
@@ -354,7 +352,6 @@ static struct tcp_congestion_ops tcp_elegant __read_mostly = {
 	.init		= elegant_init,
 	.ssthresh	= tcp_elegant_ssthresh,
 	.undo_cwnd	= tcp_elegant_undo_cwnd,
-	.cong_avoid	= elegant_cong_avoid,
 	.cong_control	= tcp_elegant_cong_control,
 	.set_state  = tcp_elegant_set_state,
 	.cwnd_event	= tcp_elegant_event

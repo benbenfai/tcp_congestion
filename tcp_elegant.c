@@ -251,11 +251,13 @@ static void elegant_update_rtt(struct sock *sk, const struct rate_sample *rs)
 {
 	struct elegant *ca = inet_csk_ca(sk);
 
+	u32 rtt_us;
+
 	/* dup ack, no rtt sample */
 	if (rs->rtt_us < 0)
 		return;
 
-	u32 rtt_us = rs->rtt_us;
+	rtt_us = rs->rtt_us;
 
 	ca->sum_rtt += rtt_us;
 	ca->cnt_rtt++;

@@ -3,7 +3,6 @@
 #include <linux/skbuff.h>
 #include <asm/div64.h>
 #include <linux/bitops.h>
-#include <linux/log2.h>
 #include <net/tcp.h>
 
 #define BETA_SHIFT	6
@@ -16,9 +15,6 @@
 #define ELEGANT_UNIT (1 << ELEGANT_SCALE)
 #define ELEGANT_UNIT_SQ_SHIFT (2 * ELEGANT_SCALE)        // 12
 #define ELEGANT_UNIT_SQUARED (1ULL << (2 * ELEGANT_SCALE))
-
-#define BW_SCALE 24
-#define BW_UNIT (1 << BW_SCALE)
 
 static int scale __read_mostly = 96U; // 1.5 * BETA_SCALE
 
@@ -34,7 +30,6 @@ struct elegant {
 	u32	base_rtt;	/* min of all rtt in usec */
     u32	rtt_max;
 	u32	rtt_curr;
-	u32 bw;
 	u32	cache_wwf;
 	u32 beta;  				 /* multiplicative decrease factor */
 	u32 inv_beta;
@@ -54,7 +49,6 @@ static void elegant_init(struct sock *sk)
 	ca->base_rtt = UINT_MAX;
 	ca->rtt_max = 0;
 	ca->rtt_curr = 0;
-	ca->bw = 0;
 	ca->cache_wwf = 0;
 	ca->beta = BETA_MIN;
 	ca->inv_beta = scale - ca->beta; // 96 - 8 = 88 (1.375)
@@ -123,31 +117,13 @@ static inline void rtt_reset(struct tcp_sock *tp, struct elegant *ca)
 	ca->cnt_rtt = 0;
 }
 
-static u32 elegant_ssthresh_bdp(struct sock *sk)
-{
-    const struct tcp_sock *tp = tcp_sk(sk);
-    const struct elegant *ca = inet_csk_ca(sk);
-    u64 bdp;
-    u64 bw = ca->bw;
-    u32 mss = tp->mss_cache ? tp->mss_cache : 1460;
-
-    if (ca->base_rtt == UINT_MAX || !bw)
-        return tcp_elegant_ssthresh(sk);
-
-    bdp = bw * ca->base_rtt;
-    do_div(bdp, BW_UNIT);
-    do_div(bdp, mss);
-
-    return max((u32)bdp, 2U);
-}
-
 static void update_params(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
 	u32 avg_delay_val = avg_delay(ca);
-	u32 thresh = win_thresh + ilog2(elegant_ssthresh_bdp(sk));
+	u32 thresh = win_thresh;
 
     if (tp->snd_cwnd < thresh) {
         ca->beta = BETA_BASE;
@@ -235,18 +211,6 @@ static void elegant_cong_avoid(struct sock *sk, const struct rate_sample *rs)
 	}
 }
 
-static void elegant_update_bw(struct sock *sk, const struct rate_sample *rs)
-{
-    struct elegant *ca = inet_csk_ca(sk);
-
-	u64 sample = DIV_ROUND_UP_ULL((u64)rs->delivered * BW_UNIT, rs->interval_us);
-	if (!ca->bw) {
-		ca->bw = sample;
-    } else {
-        ca->bw = (ca->bw + sample) >> 1;
-    }
-}
-
 static void elegant_update_rtt(struct sock *sk, const struct rate_sample *rs)
 {
 	struct elegant *ca = inet_csk_ca(sk);
@@ -288,7 +252,6 @@ static void tcp_elegant_round(struct sock *sk, const struct rate_sample *rs)
 			ca->round_base_rtt = UINT_MAX;
 			ca->round_rtt_max = 0;
 		}
-		elegant_update_bw(sk, rs);
 		ca->round_start = 1;
 		ca->next_rtt_delivered = tp->delivered;
 	}
@@ -317,24 +280,6 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 		ca->round_base_rtt = UINT_MAX;
 		ca->cache_wwf = 0;
 		ca->round_start = 1;
-		tp->snd_cwnd = tcp_packets_in_flight(tp) + 1;
-	}
-}
-
-static void tcp_elegant_event(struct sock *sk, enum tcp_ca_event event)
-{
-	struct tcp_sock *tp = tcp_sk(sk);
-	u32 bdp;
-
-	switch (event) {
-	case CA_EVENT_COMPLETE_CWR:
-		bdp = elegant_ssthresh_bdp(sk);
-		if (bdp > tp->snd_ssthresh)
-			tp->snd_ssthresh = bdp;
-		break;
-	default:
-		/* don't care */
-		break;
 	}
 }
 
@@ -355,8 +300,7 @@ static struct tcp_congestion_ops tcp_elegant __read_mostly = {
 	.ssthresh	= tcp_elegant_ssthresh,
 	.undo_cwnd	= tcp_elegant_undo_cwnd,
 	.cong_control	= tcp_elegant_cong_control,
-	.set_state  = tcp_elegant_set_state,
-	.cwnd_event	= tcp_elegant_event
+	.set_state  = tcp_elegant_set_state
 };
 
 static int __init elegant_register(void)

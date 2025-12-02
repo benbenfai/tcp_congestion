@@ -160,26 +160,6 @@ static void elegant_update_pacing_rate(struct sock *sk) {
     WRITE_ONCE(sk->sk_pacing_rate, min_t(u64, rate, sk->sk_max_pacing_rate));
 }
 
-static inline u64 fast_isqrt(u64 x)
-{
-	u64 r;
-	int i=0;
-    if (x < 2)
-        return x;
-
-    /* Initial guess: 1 << (floor(log2(x)) / 2) */
-    r = 1ULL << ((fls64(x) - 1) >> 1);
-
-    /* three Newton iteration */
-    for (i; i<3; i++)
-		r = (r + x / r) >> 1;
-
-	if (r*r>x)
-		r--;
-
-    return r;
-}
-
 static void elegant_cong_avoid(struct sock *sk, const struct rate_sample *rs)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -197,9 +177,8 @@ static void elegant_cong_avoid(struct sock *sk, const struct rate_sample *rs)
 		wwf = ca->cache_wwf;
 		if (ca->round_start || wwf == 0) {
 			u64 wwf64 = tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT;
-			div_u64(wwf64, ca->rtt_curr);
-			wwf64 = fast_isqrt(wwf64);
-			wwf = wwf64 >> ELEGANT_SCALE;
+			do_div(wwf64, ca->rtt_curr);
+			wwf = int_sqrt64(wwf64) >> ELEGANT_SCALE;
 			wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT);
 		}
 		if (wwf > acked) {

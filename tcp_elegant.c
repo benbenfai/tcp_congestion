@@ -139,8 +139,10 @@ static void update_params(struct sock *sk)
 	rtt_reset(tp, ca);
 }
 
-static void elegant_update_pacing_rate(const struct tcp_sock *tp, struct elegant *ca)
+static void elegant_update_pacing_rate(struct sock *sk, struct elegant *ca)
 {
+	struct tcp_sock *tp = tcp_sk(sk);
+
     u64 rate = (u64)tp->mss_cache * ((USEC_PER_SEC/100) << 3);
 	u64 temp = (u64)ca->inv_beta + 8U;	
     u64 scale = (temp * temp * 100ULL) >> (BETA_SHIFT * 2);
@@ -158,8 +160,10 @@ static void elegant_update_pacing_rate(const struct tcp_sock *tp, struct elegant
     WRITE_ONCE(sk->sk_pacing_rate, min_t(u64, rate, sk->sk_max_pacing_rate));
 }
 
-static void elegant_cong_avoid(struct tcp_sock *tp, struct elegant *ca, const struct rate_sample *rs)
+static void elegant_cong_avoid(struct sock *sk, struct elegant *ca, const struct rate_sample *rs)
 {
+	struct tcp_sock *tp = tcp_sk(sk);
+
 	u32 wwf;
 	u32 acked = rs->acked_sacked;
 
@@ -187,7 +191,7 @@ static void elegant_cong_avoid(struct tcp_sock *tp, struct elegant *ca, const st
 
 static void elegan_value_reset(struct elegant *ca, const struct rate_sample *rs)
 {
-	if ((ca->round_rtt_max - ca->round_base_rtt) > (ca->curr_rtt >> 2)) {
+	if ((ca->round_rtt_max - ca->round_base_rtt) > (ca->rtt_curr >> 2)) {
 		ca->cache_wwf = 0;
 	}
 
@@ -217,8 +221,10 @@ static void elegant_update_rtt(struct elegant *ca, const struct rate_sample *rs)
 		ca->round_rtt_max = rtt_us;
 }
 
-static void tcp_elegant_round(const struct tcp_sock *tp, struct elegant *ca, const struct rate_sample *rs)
+static void tcp_elegant_round(struct sock *sk, struct elegant *ca, const struct rate_sample *rs)
 {
+	struct tcp_sock *tp = tcp_sk(sk);
+
 	ca->round_start = 0;
 	if (rs->interval_us <= 0 || !rs->acked_sacked)
 		return; /* Not a valid observation */
@@ -239,17 +245,17 @@ static void tcp_elegant_round(const struct tcp_sock *tp, struct elegant *ca, con
 
 static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *rs)
 {
-	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
-	if (ca->cnt_rtt == 0 || (rs->interval_us > 0 && rs->delivered > 0))
+	if (ca->cnt_rtt == 0 || (rs->interval_us > 0 && rs->delivered > 0)) {
 		elegant_update_rtt(ca, rs);
 		elegan_value_reset(ca, rs);
+	}
 
-	tcp_elegant_round(tp, ca, rs);
-	elegant_cong_avoid(tp, ca, rs);
+	tcp_elegant_round(sk, ca, rs);
+	elegant_cong_avoid(sk, ca, rs);
 
-	elegant_update_pacing_rate(tp, ca);
+	elegant_update_pacing_rate(sk, ca);
 }
 
 static void tcp_elegant_set_state(struct sock *sk, u8 new_state)

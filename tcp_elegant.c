@@ -35,6 +35,7 @@ struct elegant {
 	u32 inv_beta;
     u32 round_start;
 	u32	next_rtt_delivered;
+	u32 prior_cwnd;
 };
 
 static void elegant_init(struct sock *sk)
@@ -54,6 +55,7 @@ static void elegant_init(struct sock *sk)
 	ca->inv_beta = scale - ca->beta; // 96 - 8 = 88 (1.375)
 	ca->round_start = 0;
 	ca->next_rtt_delivered = tp->delivered;
+	ca->prior_cwnd = tp->snd_cwnd;
 }
 
 static u32 tcp_elegant_ssthresh(struct sock *sk)
@@ -61,7 +63,11 @@ static u32 tcp_elegant_ssthresh(struct sock *sk)
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
-	return max(tp->snd_cwnd - ((ca->beta * tp->snd_cwnd)>> BETA_SHIFT), 2U);
+	u32 cwnd = tp->snd_cwnd;
+
+	ca->prior_cwnd = cwnd;
+
+	return max(cwnd - ((ca->beta * cwnd)>> BETA_SHIFT), 2U);
 }
 
 /* Maximum queuing delay */
@@ -178,7 +184,6 @@ static void elegant_cong_avoid(struct sock *sk, struct elegant *ca, const struct
 			u64 wwf64 = tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT;
 			do_div(wwf64, ca->rtt_curr);
 			wwf = int_sqrt64(wwf64) >> ELEGANT_SCALE;
-			wwf = ((wwf * ca->inv_beta) >> BETA_SHIFT);
 		}
 		if (wwf > acked) {
 			ca->cache_wwf = wwf;
@@ -264,7 +269,7 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 	struct elegant *ca = inet_csk_ca(sk);
 
 	if (new_state == TCP_CA_Loss) {
-		tp->snd_cwnd = tcp_packets_in_flight(tp) + 1;
+		tp->snd_cwnd = max(tcp_packets_in_flight(tp) + 1, ca->prior_cwnd);
 		rtt_reset(tp, ca);
 		ca->round_base_rtt = UINT_MAX;
 		ca->cache_wwf = 0;
@@ -279,7 +284,7 @@ static u32 tcp_elegant_undo_cwnd(struct sock *sk)
 
 	ca->cache_wwf = 0;
 
-    return max(tp->snd_cwnd, tp->prior_cwnd);
+    return max(tp->snd_cwnd, ca->prior_cwnd);
 }
 
 static struct tcp_congestion_ops tcp_elegant __read_mostly = {

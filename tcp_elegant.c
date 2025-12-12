@@ -269,7 +269,6 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 	struct elegant *ca = inet_csk_ca(sk);
 
 	if (new_state == TCP_CA_Loss) {
-		tp->snd_cwnd = max(tcp_packets_in_flight(tp) + 1, ca->prior_cwnd);
 		rtt_reset(tp, ca);
 		ca->round_base_rtt = UINT_MAX;
 		ca->cache_wwf = 0;

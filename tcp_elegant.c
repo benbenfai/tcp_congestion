@@ -128,15 +128,12 @@ static void update_params(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
-	u32 avg_delay_val = avg_delay(ca);
-	u32 thresh = win_thresh;
-
-    if (tp->snd_cwnd < thresh) {
+    if (tp->snd_cwnd < win_thresh) {
         ca->beta = BETA_BASE;
 		ca->inv_beta = scale - ca->beta;
     } else if (ca->cnt_rtt > 0) {
 		u32 dm = max_delay(ca);
-		u32 da = avg_delay_val;
+		u32 da = avg_delay(ca);
 
 		ca->beta = beta(da, dm);
 		ca->inv_beta = scale - ca->beta;
@@ -237,9 +234,11 @@ static void tcp_elegant_round(struct sock *sk, struct elegant *ca, const struct 
 	/* See if we've reached the next RTT */
 	if (rs->interval_us > 0 && !before(rs->prior_delivered, ca->next_rtt_delivered)) {
 		if (ca->round_base_rtt != UINT_MAX) {
-			ca->base_rtt = ca->round_base_rtt;
-			ca->rtt_max = ca->round_rtt_max;
-			update_params(sk);
+			if (!tcp_in_slow_start(tp)) {
+				ca->base_rtt = ca->round_base_rtt;
+				ca->rtt_max = ca->round_rtt_max;
+				update_params(sk);
+			}
 			ca->round_base_rtt = UINT_MAX;
 			ca->round_rtt_max = 0;
 		}

@@ -163,6 +163,26 @@ static void elegant_update_pacing_rate(struct sock *sk, struct elegant *ca)
     WRITE_ONCE(sk->sk_pacing_rate, min_t(u64, rate, sk->sk_max_pacing_rate));
 }
 
+static inline u64 fast_isqrt(u64 x)
+{
+	u64 r;
+	int i=0;
+    if (x < 2)
+        return x;
+
+    /* Initial guess: 1 << (floor(log2(x)) / 2) */
+    r = 1ULL << ((fls64(x) - 1) >> 1);
+
+    /* three Newton iteration */
+    for (i; i<3; i++)
+		r = (r + x / r) >> 1;
+
+	if (r*r>x)
+		r--;
+
+    return r;
+}
+
 static void elegant_cong_avoid(struct sock *sk, struct elegant *ca, const struct rate_sample *rs)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -180,7 +200,7 @@ static void elegant_cong_avoid(struct sock *sk, struct elegant *ca, const struct
 		if (ca->round_start || wwf == 0) {
 			u64 wwf64 = tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT;
 			do_div(wwf64, ca->rtt_curr);
-			wwf = int_sqrt64(wwf64) >> ELEGANT_SCALE;
+			wwf = fast_isqrt(wwf64) >> ELEGANT_SCALE;
 		}
 		if (wwf > acked) {
 			ca->cache_wwf = wwf;
@@ -188,17 +208,6 @@ static void elegant_cong_avoid(struct sock *sk, struct elegant *ca, const struct
 			wwf = acked;
 		}
 		tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
-	}
-}
-
-static void elegan_value_reset(struct elegant *ca, const struct rate_sample *rs)
-{
-	if ((ca->round_rtt_max - ca->round_base_rtt) > (ca->rtt_curr >> 2)) {
-		ca->cache_wwf = 0;
-	}
-
-	if (rs->acked_sacked && rs->acked_sacked < (ca->cache_wwf >> 1)) {
-		ca->cache_wwf = 0;
 	}
 }
 
@@ -231,6 +240,10 @@ static void tcp_elegant_round(struct sock *sk, struct elegant *ca, const struct 
 	if (rs->interval_us <= 0 || !rs->acked_sacked)
 		return; /* Not a valid observation */
 
+	if (ca->round_base_rtt != UINT_MAX && ca->round_base_rtt > tp->srtt_us >> 1) {
+		ca->cache_wwf = 0;
+	}
+
 	/* See if we've reached the next RTT */
 	if (rs->interval_us > 0 && !before(rs->prior_delivered, ca->next_rtt_delivered)) {
 		if (ca->round_base_rtt != UINT_MAX) {
@@ -253,7 +266,6 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 
 	if (ca->cnt_rtt == 0 || (rs->interval_us > 0 && rs->delivered > 0)) {
 		elegant_update_rtt(ca, rs);
-		elegan_value_reset(ca, rs);
 	}
 
 	tcp_elegant_round(sk, ca, rs);

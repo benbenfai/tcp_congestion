@@ -132,7 +132,7 @@ static void update_params(struct sock *sk)
 		u32 dm = max_delay(ca);
 		u32 da = avg_delay(ca);
 
-		tp->snd_ssthresh = (1 / da >> 1) * ca->rtt_curr;
+		tp->snd_ssthresh = max(2U, ca->rtt_curr / (da >>1));
 
 		ca->beta = beta(da, dm);
 	}

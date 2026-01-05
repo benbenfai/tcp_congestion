@@ -32,7 +32,6 @@ struct elegant {
 	u32	rtt_curr;
 	u32	cache_wwf;
 	u32 beta;  				 /* multiplicative decrease factor */
-	u32 inv_beta;
     u32 round_start;
 	u32	next_rtt_delivered;
 	u32 prior_cwnd;
@@ -52,7 +51,6 @@ static void elegant_init(struct sock *sk)
 	ca->rtt_curr = 0;
 	ca->cache_wwf = 0;
 	ca->beta = BETA_MIN;
-	ca->inv_beta = scale - ca->beta; // 96 - 8 = 88 (1.375)
 	ca->round_start = 0;
 	ca->next_rtt_delivered = tp->delivered;
 	ca->prior_cwnd = tp->snd_cwnd;
@@ -67,7 +65,7 @@ static u32 tcp_elegant_ssthresh(struct sock *sk)
 
 	ca->prior_cwnd = cwnd;
 
-	return max(cwnd - ((ca->beta * cwnd)>> BETA_SHIFT), 2U);
+	return max(cwnd >> 1U, 2U);
 }
 
 /* Maximum queuing delay */
@@ -130,13 +128,13 @@ static void update_params(struct sock *sk)
 
     if (tp->snd_cwnd < win_thresh) {
         ca->beta = BETA_BASE;
-		ca->inv_beta = scale - ca->beta;
     } else if (ca->cnt_rtt > 0) {
 		u32 dm = max_delay(ca);
 		u32 da = avg_delay(ca);
 
+		tp->snd_ssthresh = (1 / da >> 1) * ca->rtt_curr;
+
 		ca->beta = beta(da, dm);
-		ca->inv_beta = scale - ca->beta;
 	}
 
 	rtt_reset(tp, ca);
@@ -147,7 +145,7 @@ static void elegant_update_pacing_rate(struct sock *sk, struct elegant *ca)
 	struct tcp_sock *tp = tcp_sk(sk);
 
     u64 rate = (u64)tp->mss_cache * ((USEC_PER_SEC/100) << 3);
-	u64 temp = (u64)ca->inv_beta + 8U;	
+	u64 temp = (u64)(scale - ca->beta + 8U);
     u64 scale = (temp * temp * 100ULL) >> (BETA_SHIFT * 2);
 
 	if (tp->snd_cwnd < (tp->snd_ssthresh >> 1)) {
@@ -240,10 +238,6 @@ static void tcp_elegant_round(struct sock *sk, struct elegant *ca, const struct 
 	if (rs->interval_us <= 0 || !rs->acked_sacked)
 		return; /* Not a valid observation */
 
-	if (ca->round_base_rtt != UINT_MAX && ca->round_base_rtt > tp->srtt_us >> 1) {
-		ca->cache_wwf = 0;
-	}
-
 	/* See if we've reached the next RTT */
 	if (rs->interval_us > 0 && !before(rs->prior_delivered, ca->next_rtt_delivered)) {
 		if (ca->round_base_rtt != UINT_MAX) {
@@ -257,6 +251,8 @@ static void tcp_elegant_round(struct sock *sk, struct elegant *ca, const struct 
 		}
 		ca->round_start = 1;
 		ca->next_rtt_delivered = tp->delivered;
+	} else 	if (ca->round_base_rtt != UINT_MAX && ca->round_base_rtt > tp->srtt_us >> 1) {
+		ca->cache_wwf = 0;
 	}
 }
 
@@ -301,7 +297,7 @@ static struct tcp_congestion_ops tcp_elegant __read_mostly = {
 	.name		= "elegant",
 	.owner		= THIS_MODULE,
 	.init		= elegant_init,
-	.ssthresh	= tcp_elegant_ssthresh,
+	.ssthresh	= tcp_reno_ssthresh,
 	.undo_cwnd	= tcp_elegant_undo_cwnd,
 	.cong_control	= tcp_elegant_cong_control,
 	.set_state  = tcp_elegant_set_state

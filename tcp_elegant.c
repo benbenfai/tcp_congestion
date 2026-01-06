@@ -130,7 +130,7 @@ static void update_params(struct sock *sk)
 
 		ca->beta = beta(da, dm);
 
-		tp->snd_ssthresh = max(2U, ca->rtt_curr * (1 - (ca->beta>> BETA_SHIFT)) / da);
+		tp->snd_ssthresh = max(2U, ca->rtt_curr / (da * (BETA_SCALE - ca->beta)));
 		ca->prior_cwnd = tp->snd_ssthresh;
 	}
 

@@ -236,11 +236,9 @@ static void tcp_elegant_round(struct sock *sk, struct elegant *ca, const struct 
 	/* See if we've reached the next RTT */
 	if (rs->interval_us > 0 && !before(rs->prior_delivered, ca->next_rtt_delivered)) {
 		if (ca->round_base_rtt != UINT_MAX) {
-			if (!tcp_in_slow_start(tp)) {
-				ca->base_rtt = ca->round_base_rtt;
-				ca->rtt_max = ca->round_rtt_max;
-				update_params(sk);
-			}
+			ca->base_rtt = ca->round_base_rtt;
+			ca->rtt_max = ca->round_rtt_max;
+			update_params(sk);
 			ca->round_base_rtt = UINT_MAX;
 			ca->round_rtt_max = 0;
 		}

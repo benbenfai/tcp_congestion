@@ -63,9 +63,7 @@ static u32 tcp_elegant_ssthresh(struct sock *sk)
 
 	u32 cwnd = tp->snd_cwnd;
 
-	ca->prior_cwnd = cwnd;
-
-	return max(cwnd >> 1U, 2U);
+	return max(tp->snd_cwnd; >> 1U, 2U);
 }
 
 /* Maximum queuing delay */
@@ -132,9 +130,10 @@ static void update_params(struct sock *sk)
 		u32 dm = max_delay(ca);
 		u32 da = avg_delay(ca);
 
-		tp->snd_ssthresh = max(2U, ca->rtt_curr / (da >>1));
-
 		ca->beta = beta(da, dm);
+
+		tp->snd_ssthresh = max(2U, ca->rtt_curr / (da / (scale - ca->beta) >> BETA_SHIFT));
+		ca->prior_cwnd = tp->snd_ssthresh;
 	}
 
 	rtt_reset(tp, ca);
@@ -199,11 +198,7 @@ static void elegant_cong_avoid(struct sock *sk, struct elegant *ca, const struct
 			u64 wwf64 = tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT;
 			do_div(wwf64, ca->rtt_curr);
 			wwf = fast_isqrt(wwf64) >> ELEGANT_SCALE;
-		}
-		if (wwf > acked) {
 			ca->cache_wwf = wwf;
-		} else {
-			wwf = acked;
 		}
 		tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 	}

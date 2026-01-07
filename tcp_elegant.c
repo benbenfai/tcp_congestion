@@ -30,9 +30,7 @@ struct elegant {
 	u32	base_rtt;	/* min of all rtt in usec */
     u32	rtt_max;
 	u32	rtt_curr;
-	u32	cache_wwf;
 	u32 beta;  				 /* multiplicative decrease factor */
-    u32 round_start;
 	u32	next_rtt_delivered;
 	u32 prior_cwnd;
 };
@@ -49,9 +47,7 @@ static void elegant_init(struct sock *sk)
 	ca->base_rtt = UINT_MAX;
 	ca->rtt_max = 0;
 	ca->rtt_curr = 0;
-	ca->cache_wwf = 0;
 	ca->beta = BETA_MIN;
-	ca->round_start = 0;
 	ca->next_rtt_delivered = tp->delivered;
 	ca->prior_cwnd = tp->snd_cwnd;
 }
@@ -182,22 +178,16 @@ static void elegant_cong_avoid(struct sock *sk, struct elegant *ca, const struct
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	u32 wwf;
-	u32 acked = rs->acked_sacked;
-
 	if (!tcp_is_cwnd_limited(sk))
 		return;
 
 	if (tcp_in_slow_start(tp)) {
-		tcp_slow_start(tp, acked);
+		tcp_slow_start(tp, rs->acked_sacked);
 	} else {
-		wwf = ca->cache_wwf;
-		if (ca->round_start || wwf == 0) {
-			u64 wwf64 = tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT;
-			do_div(wwf64, ca->rtt_curr);
-			wwf = fast_isqrt(wwf64) >> ELEGANT_SCALE;
-			ca->cache_wwf = wwf;
-		}
+		u32 wwf;
+		u64 wwf64 = tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT;
+		do_div(wwf64, ca->rtt_curr);
+		wwf = fast_isqrt(wwf64) >> ELEGANT_SCALE;
 		tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 	}
 }
@@ -227,7 +217,6 @@ static void tcp_elegant_round(struct sock *sk, struct elegant *ca, const struct 
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	ca->round_start = 0;
 	if (rs->interval_us <= 0 || !rs->acked_sacked)
 		return; /* Not a valid observation */
 
@@ -240,10 +229,7 @@ static void tcp_elegant_round(struct sock *sk, struct elegant *ca, const struct 
 			ca->round_base_rtt = UINT_MAX;
 			ca->round_rtt_max = 0;
 		}
-		ca->round_start = 1;
 		ca->next_rtt_delivered = tp->delivered;
-	} else 	if (ca->round_base_rtt != UINT_MAX && ca->round_base_rtt > tp->srtt_us >> 1) {
-		ca->cache_wwf = 0;
 	}
 }
 
@@ -269,8 +255,6 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 	if (new_state == TCP_CA_Loss) {
 		rtt_reset(tp, ca);
 		ca->round_base_rtt = UINT_MAX;
-		ca->cache_wwf = 0;
-		ca->round_start = 1;
 	}
 }
 
@@ -278,8 +262,6 @@ static u32 tcp_elegant_undo_cwnd(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
     struct elegant *ca = inet_csk_ca(sk);
-
-	ca->cache_wwf = 0;
 
     return max(tp->snd_cwnd, ca->prior_cwnd);
 }

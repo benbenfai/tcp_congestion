@@ -217,9 +217,6 @@ static void tcp_elegant_round(struct sock *sk, struct elegant *ca, const struct 
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	if (rs->interval_us <= 0 || !rs->acked_sacked)
-		return; /* Not a valid observation */
-
 	/* See if we've reached the next RTT */
 	if (rs->interval_us > 0 && !before(rs->prior_delivered, ca->next_rtt_delivered)) {
 		if (ca->round_base_rtt != UINT_MAX) {
@@ -242,7 +239,9 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 	}
 
 	tcp_elegant_round(sk, ca, rs);
-	elegant_cong_avoid(sk, ca, rs);
+
+	if (rs->interval_us > 0 || rs->acked_sacked)
+		elegant_cong_avoid(sk, ca, rs);
 
 	elegant_update_pacing_rate(sk, ca);
 }

@@ -240,7 +240,7 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 
 	tcp_elegant_round(sk, ca, rs);
 
-	if (rs->interval_us > 0 && rs->acked_sacked)
+	if (rs->interval_us > 0 && rs->acked_sacked > 0)
 		elegant_cong_avoid(sk, ca, rs);
 
 	elegant_update_pacing_rate(sk, ca);

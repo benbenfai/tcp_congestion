@@ -55,7 +55,6 @@ static void elegant_init(struct sock *sk)
 static u32 tcp_elegant_ssthresh(struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
-	//struct elegant *ca = inet_csk_ca(sk);
 
 	return max(tp->snd_cwnd >> 1, 2U);
 }
@@ -234,13 +233,12 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 {
 	struct elegant *ca = inet_csk_ca(sk);
 
-	if (ca->cnt_rtt == 0 || (rs->interval_us > 0 && rs->delivered > 0)) {
+	if (rs->rtt_us > 0 && (ca->cnt_rtt == 0 || !rs->is_ack_delayed))
 		elegant_update_rtt(ca, rs);
-	}
 
 	tcp_elegant_round(sk, ca, rs);
 
-	if (rs->interval_us > 0 && rs->acked_sacked > 0)
+	if (rs->interval_us > 0 && rs->delivered > 0)
 		elegant_cong_avoid(sk, ca, rs);
 
 	elegant_update_pacing_rate(sk, ca);

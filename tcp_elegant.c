@@ -16,8 +16,6 @@
 #define ELEGANT_UNIT_SQ_SHIFT (2 * ELEGANT_SCALE)        // 12
 #define ELEGANT_UNIT_SQUARED (1ULL << (2 * ELEGANT_SCALE))
 
-static int scale __read_mostly = 96U; // 1.5 * BETA_SCALE
-
 static int win_thresh __read_mostly = 15; /* Increased threshold for adaptive alpha/beta */
 module_param(win_thresh, int, 0);
 MODULE_PARM_DESC(win_thresh, "Window threshold for starting adaptive sizing");
@@ -137,8 +135,8 @@ static void elegant_update_pacing_rate(struct sock *sk, struct elegant *ca)
 	struct tcp_sock *tp = tcp_sk(sk);
 
     u64 rate = (u64)tp->mss_cache * ((USEC_PER_SEC/100) << 3);
-	u64 temp = (u64)(scale - ca->beta + 8U);
-    u64 scale = (temp * temp * 100ULL) >> (BETA_SHIFT * 2);
+	u64 temp = (u64)(66 * ca->beta - 6144); /* Q10 */
+	u64 scale = temp >> 10;
 
 	if (tp->snd_cwnd < (tp->snd_ssthresh >> 1)) {
 		scale = max(200ULL, scale);
@@ -189,7 +187,7 @@ static void elegant_cong_avoid(struct sock *sk, struct elegant *ca, const struct
 		wwf = fast_isqrt(wwf64) >> ELEGANT_SCALE;
 		tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 		if (tp->snd_cwnd < ca->prior_cwnd)
-			tp->snd_cwnd = ca->prior_cwnd + 1U;
+			tp->snd_cwnd = ca->prior_cwnd + 1;
 	}
 }
 

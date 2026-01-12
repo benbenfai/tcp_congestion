@@ -180,7 +180,7 @@ static void elegant_cong_avoid(struct sock *sk, struct elegant *ca, const struct
 		return;
 
 	if (tcp_in_slow_start(tp)) {
-		tcp_slow_start(tp, rs->acked_sacked);
+		tp->snd_cwnd = ca->prior_cwnd;
 	} else {
 		u32 wwf;
 		u64 wwf64 = tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT;

@@ -47,14 +47,15 @@ static void elegant_init(struct sock *sk)
 	ca->rtt_curr = 0;
 	ca->beta = BETA_MIN;
 	ca->next_rtt_delivered = tp->delivered;
-	ca->prior_cwnd = tp->snd_cwnd;
+	ca->prior_cwnd = tp->snd_ssthresh;
 }
 
 static u32 tcp_elegant_ssthresh(struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
+	struct elegant *ca = inet_csk_ca(sk);
 
-	return max(tp->snd_cwnd >> 1, 2U);
+	return  min(ca->prior_cwnd, tp->snd_cwnd);
 }
 
 /* Maximum queuing delay */
@@ -186,8 +187,6 @@ static void elegant_cong_avoid(struct sock *sk, struct elegant *ca, const struct
 		do_div(wwf64, ca->rtt_curr);
 		wwf = fast_isqrt(wwf64) >> ELEGANT_SCALE;
 		tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
-		if (tp->snd_cwnd < ca->prior_cwnd)
-			tp->snd_cwnd = ca->prior_cwnd + 1;
 	}
 }
 

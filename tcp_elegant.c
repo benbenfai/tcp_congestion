@@ -55,8 +55,9 @@ static u32 tcp_elegant_ssthresh(struct sock *sk)
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
-	u32 ssthresh = max(ca->prior_cwnd, (tp->snd_cwnd * ca->beta) >> BETA_SHIFT);
-	ssthresh = max(ssthresh, 2U);
+	u32 ssthresh = max(2U, ca->rtt_curr * BETA_SCALE / (avg_delay(ca) * (BETA_SCALE - ca->beta)));
+	ssthresh = max(ssthresh, (tp->snd_cwnd * ca->beta) >> BETA_SHIFT);
+	ca->prior_cwnd = ssthresh
 
 	return ssthresh;
 }
@@ -126,9 +127,6 @@ static void update_params(struct sock *sk)
 		u32 da = avg_delay(ca);
 
 		ca->beta = beta(da, dm);
-
-		tp->snd_ssthresh = max(2U, ca->rtt_curr * BETA_SCALE / (da * (BETA_SCALE - ca->beta)));
-		ca->prior_cwnd = tp->snd_ssthresh;
 	}
 
 	rtt_reset(tp, ca);

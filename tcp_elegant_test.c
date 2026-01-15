@@ -16,7 +16,11 @@
 #define ELEGANT_UNIT_SQ_SHIFT (2 * ELEGANT_SCALE)        // 12
 #define ELEGANT_UNIT_SQUARED (1ULL << (2 * ELEGANT_SCALE))
 
-static int scale __read_mostly = 96U; // 1.5 * BETA_SCALE
+#define BW_SCALE 24
+#define BW_UNIT (1 << BW_SCALE)
+
+#define BBR_SCALE 8	/* scaling factor for fractions in BBR (e.g. gains) */
+#define BBR_UNIT (1 << BBR_SCALE)
 
 static int win_thresh __read_mostly = 15; /* Increased threshold for adaptive alpha/beta */
 module_param(win_thresh, int, 0);
@@ -30,12 +34,99 @@ struct elegant {
 	u32	base_rtt;	/* min of all rtt in usec */
     u32	rtt_max;
 	u32	rtt_curr;
-	u32	cache_wwf;
+	u32	bw_hi[2];	 /* max recent measured bw sample */
 	u32 beta;  				 /* multiplicative decrease factor */
-    u32 round_start;
 	u32	next_rtt_delivered;
 	u32 prior_cwnd;
+	u32 bw_drop;
 };
+
+/* Return rate in bytes per second, optionally with a gain.
+ * The order here is chosen carefully to avoid overflow of u64. This should
+ * work for input rates of up to 2.9Tbit/sec and gain of 2.89x.
+ */
+static u64 bbr_rate_bytes_per_sec(struct sock *sk, u64 rate, int margin)
+{
+	unsigned int mss = tcp_sk(sk)->mss_cache;
+
+	rate *= mss;
+	//rate *= gain;
+	rate >>= BBR_SCALE;
+	rate *= USEC_PER_SEC / 100 * (100 - margin);
+	rate >>= BW_SCALE;
+	rate = max(rate, 1ULL);
+	return rate;
+}
+
+static unsigned long bbr_bw_to_pacing_rate(struct sock *sk, u32 bw)
+{
+	u64 rate = bw;
+
+	rate = bbr_rate_bytes_per_sec(sk, rate, 1);
+	rate = min_t(u64, rate, READ_ONCE(sk->sk_max_pacing_rate));
+	return rate;
+}
+
+static void bbr_init_pacing_rate_from_rtt(struct sock *sk)
+{
+	struct tcp_sock *tp = tcp_sk(sk);
+	u64 bw;
+	u32 rtt_us;
+
+	if (tp->srtt_us) {		/* any RTT sample yet? */
+		rtt_us = max(tp->srtt_us >> 3, 1U);
+	} else {			 /* no RTT sample yet */
+		rtt_us = USEC_PER_MSEC;	 /* use nominal default RTT */
+	}
+	bw = (u64)tp->snd_cwnd * BW_UNIT;
+	do_div(bw, rtt_us);
+	WRITE_ONCE(sk->sk_pacing_rate,
+		   bbr_bw_to_pacing_rate(sk, bw));
+}
+
+static void bbr_set_pacing_rate(struct sock *sk, u32 bw)
+{
+	struct tcp_sock *tp = tcp_sk(sk);
+	struct elegant *ca = inet_csk_ca(sk);
+	unsigned long rate = bbr_bw_to_pacing_rate(sk, bw);
+
+	if (unlikely(ca->cnt_rtt > 0 && tp->srtt_us))
+		bbr_init_pacing_rate_from_rtt(sk);
+	rate = max(rate, 120UL);
+	if (rate > READ_ONCE(sk->sk_pacing_rate))
+		WRITE_ONCE(sk->sk_pacing_rate, rate);
+}
+
+static u32 bbr_max_bw(const struct sock *sk)
+{
+	const struct elegant *ca= inet_csk_ca(sk);
+
+	return max(ca->bw_hi[0], ca->bw_hi[1]);
+}
+
+static void bbr_take_max_bw_sample(struct sock *sk, u32 bw)
+{
+	struct elegant *ca = inet_csk_ca(sk);
+
+	ca->bw_hi[1] = max(bw, ca->bw_hi[1]);
+}
+
+static void bbr_advance_max_bw_filter(struct sock *sk)
+{
+	struct elegant *ca = inet_csk_ca(sk);
+
+	if (!ca->bw_hi[1])
+		return;  /* no samples in this window; remember old window */
+
+	if (ca->bw_hi[0] > ca->bw_hi[1]) {
+		ca->bw_drop = 1;
+	} else {
+		ca->bw_drop = 0;
+	}
+	
+	ca->bw_hi[0] = ca->bw_hi[1];
+	ca->bw_hi[1] = 0;
+}
 
 static void elegant_init(struct sock *sk)
 {
@@ -49,23 +140,14 @@ static void elegant_init(struct sock *sk)
 	ca->base_rtt = UINT_MAX;
 	ca->rtt_max = 0;
 	ca->rtt_curr = 0;
-	ca->cache_wwf = 0;
+	ca->bw_hi[0] = 0;
+	ca->bw_hi[1] = 0;
 	ca->beta = BETA_MIN;
-	ca->round_start = 0;
 	ca->next_rtt_delivered = tp->delivered;
-	ca->prior_cwnd = tp->snd_cwnd;
-}
+	ca->prior_cwnd = tp->snd_ssthresh;
+	ca->bw_drop = 0;
 
-static u32 tcp_elegant_ssthresh(struct sock *sk)
-{
-	const struct tcp_sock *tp = tcp_sk(sk);
-	struct elegant *ca = inet_csk_ca(sk);
-
-	u32 cwnd = tp->snd_cwnd;
-
-	ca->prior_cwnd = cwnd;
-
-	return max(cwnd - ((ca->beta * cwnd)>> BETA_SHIFT), 2U);
+	bbr_init_pacing_rate_from_rtt(sk);
 }
 
 /* Maximum queuing delay */
@@ -121,6 +203,23 @@ static inline void rtt_reset(struct tcp_sock *tp, struct elegant *ca)
 	ca->cnt_rtt = 0;
 }
 
+static u32 tcp_elegant_ssthresh(struct sock *sk)
+{
+	const struct tcp_sock *tp = tcp_sk(sk);
+	struct elegant *ca = inet_csk_ca(sk);
+
+	u32 ssthresh = 0;
+
+	if (ca->bw_drop)
+		WRITE_ONCE(sk->sk_pacing_rate,
+			   bbr_bw_to_pacing_rate(sk, bbr_max_bw(sk)));
+
+	ssthresh = ca->prior_cwnd = max(2U, ca->rtt_curr * BETA_SCALE / (avg_delay(ca) * (BETA_SCALE - ca->beta)));
+	ssthresh = max(ssthresh, (tp->snd_cwnd * ca->beta) >> BETA_SHIFT);
+
+	return ssthresh;
+}
+
 static void update_params(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -136,27 +235,6 @@ static void update_params(struct sock *sk)
 	}
 
 	rtt_reset(tp, ca);
-}
-
-static void elegant_update_pacing_rate(struct sock *sk, struct elegant *ca)
-{
-	struct tcp_sock *tp = tcp_sk(sk);
-
-    u64 rate = (u64)tp->mss_cache * ((USEC_PER_SEC/100) << 3);
-	u64 temp = (u64)(scale - ca->beta + 8U);
-    u64 scale = (temp * temp * 100ULL) >> (BETA_SHIFT * 2);
-
-	if (tp->snd_cwnd < (tp->snd_ssthresh >> 1)) {
-		scale = max(200ULL, scale);
-	}
-
-	rate *= scale;
-    rate *= max(tp->snd_cwnd, tp->packets_out);
-
-    if (likely(tp->srtt_us))
-        do_div(rate, tp->srtt_us);
-
-    WRITE_ONCE(sk->sk_pacing_rate, min_t(u64, rate, sk->sk_max_pacing_rate));
 }
 
 static inline u64 fast_isqrt(u64 x)
@@ -183,26 +261,16 @@ static void elegant_cong_avoid(struct sock *sk, struct elegant *ca, const struct
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	u32 wwf;
-	u32 acked = rs->acked_sacked;
-
 	if (!tcp_is_cwnd_limited(sk))
 		return;
 
 	if (tcp_in_slow_start(tp)) {
-		tcp_slow_start(tp, acked);
+		tp->snd_cwnd = ca->prior_cwnd;
 	} else {
-		wwf = ca->cache_wwf;
-		if (ca->round_start || wwf == 0) {
-			u64 wwf64 = tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT;
-			do_div(wwf64, ca->rtt_curr);
-			wwf = fast_isqrt(wwf64) >> ELEGANT_SCALE;
-		}
-		if (wwf > acked) {
-			ca->cache_wwf = wwf;
-		} else {
-			wwf = acked;
-		}
+		u32 wwf;
+		u64 wwf64 = tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT;
+		do_div(wwf64, ca->rtt_curr);
+		wwf = fast_isqrt(wwf64) >> ELEGANT_SCALE;
 		tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 	}
 }
@@ -232,25 +300,24 @@ static void tcp_elegant_round(struct sock *sk, struct elegant *ca, const struct 
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	ca->round_start = 0;
-	if (rs->interval_us <= 0 || !rs->acked_sacked)
-		return; /* Not a valid observation */
+	u64 bw = 0;
 
 	/* See if we've reached the next RTT */
 	if (rs->interval_us > 0 && !before(rs->prior_delivered, ca->next_rtt_delivered)) {
 		if (ca->round_base_rtt != UINT_MAX) {
-			if (!tcp_in_slow_start(tp)) {
-				ca->base_rtt = ca->round_base_rtt;
-				ca->rtt_max = ca->round_rtt_max;
-				update_params(sk);
-			}
+			ca->base_rtt = ca->round_base_rtt;
+			ca->rtt_max = ca->round_rtt_max;
+			update_params(sk);
 			ca->round_base_rtt = UINT_MAX;
 			ca->round_rtt_max = 0;
+			bw = DIV_ROUND_UP_ULL((u64)rs->delivered * BW_UNIT, rs->interval_us);
+			if (!rs->is_app_limited) {
+				bbr_take_max_bw_sample(sk, bw);
+				bbr_advance_max_bw_filter(sk);
+			}
+			bbr_set_pacing_rate(sk, bw);
 		}
-		ca->round_start = 1;
 		ca->next_rtt_delivered = tp->delivered;
-	} else 	if (ca->round_base_rtt != UINT_MAX && ca->round_base_rtt > tp->srtt_us >> 1) {
-		ca->cache_wwf = 0;
 	}
 }
 
@@ -258,14 +325,13 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 {
 	struct elegant *ca = inet_csk_ca(sk);
 
-	if (ca->cnt_rtt == 0 || (rs->interval_us > 0 && rs->delivered > 0)) {
+	if (rs->rtt_us > 0 && (ca->cnt_rtt == 0 || !rs->is_ack_delayed))
 		elegant_update_rtt(ca, rs);
-	}
 
 	tcp_elegant_round(sk, ca, rs);
-	elegant_cong_avoid(sk, ca, rs);
 
-	elegant_update_pacing_rate(sk, ca);
+	if (rs->interval_us > 0 && rs->delivered > 0)
+		elegant_cong_avoid(sk, ca, rs);
 }
 
 static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
@@ -276,8 +342,7 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 	if (new_state == TCP_CA_Loss) {
 		rtt_reset(tp, ca);
 		ca->round_base_rtt = UINT_MAX;
-		ca->cache_wwf = 0;
-		ca->round_start = 1;
+		ca->round_rtt_max = 0;
 	}
 }
 
@@ -285,8 +350,6 @@ static u32 tcp_elegant_undo_cwnd(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
     struct elegant *ca = inet_csk_ca(sk);
-
-	ca->cache_wwf = 0;
 
     return max(tp->snd_cwnd, ca->prior_cwnd);
 }

@@ -50,18 +50,6 @@ static void elegant_init(struct sock *sk)
 	ca->prior_cwnd = tp->snd_ssthresh;
 }
 
-static u32 tcp_elegant_ssthresh(struct sock *sk)
-{
-	const struct tcp_sock *tp = tcp_sk(sk);
-	struct elegant *ca = inet_csk_ca(sk);
-
-	u32 ssthresh = max(2U, ca->rtt_curr * BETA_SCALE / (avg_delay(ca) * (BETA_SCALE - ca->beta)));
-	ssthresh = max(ssthresh, (tp->snd_cwnd * ca->beta) >> BETA_SHIFT);
-	ca->prior_cwnd = ssthresh
-
-	return ssthresh;
-}
-
 /* Maximum queuing delay */
 static inline u32 max_delay(const struct elegant *ca)
 {
@@ -113,6 +101,17 @@ static inline void rtt_reset(struct tcp_sock *tp, struct elegant *ca)
 {
 	ca->sum_rtt = 0;
 	ca->cnt_rtt = 0;
+}
+
+static u32 tcp_elegant_ssthresh(struct sock *sk)
+{
+	const struct tcp_sock *tp = tcp_sk(sk);
+	struct elegant *ca = inet_csk_ca(sk);
+
+	u32 ssthresh = ca->prior_cwnd = max(2U, ca->rtt_curr * BETA_SCALE / (avg_delay(ca) * (BETA_SCALE - ca->beta)));
+	ssthresh = max(ssthresh, (tp->snd_cwnd * ca->beta) >> BETA_SHIFT);
+
+	return ssthresh;
 }
 
 static void update_params(struct sock *sk)

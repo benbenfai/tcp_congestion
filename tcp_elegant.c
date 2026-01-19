@@ -57,7 +57,7 @@ static u64 bbr_rate_bytes_per_sec(struct sock *sk, const struct elegant *ca, u64
 	unsigned int mss = tcp_sk(sk)->mss_cache;
 
 	rate *= mss;
-	rate = ((rate * 11) >> 3) - beta_scale(ca, rate);
+	rate = ((rate * 11) >> 3) - ((rate * ca->beta) >> BETA_SHIFT);
 	rate >>= BBR_SCALE;
 	rate *= USEC_PER_SEC / 100 * (100 - margin);
 	rate >>= BW_SCALE;

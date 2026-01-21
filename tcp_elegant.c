@@ -331,11 +331,12 @@ static void tcp_elegant_round(struct sock *sk, struct elegant *ca, const struct 
 
 static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *rs)
 {
+	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
 	u64 bw = 0;
 
-	if (rs->rtt_us > 0 && !rs->is_ack_delayed)
+	if (tcp_in_slow_start(tp) || (rs->rtt_us > 0 && !rs->is_ack_delayed))
 		elegant_update_rtt(ca, rs);
 
 	tcp_elegant_round(sk, ca, rs);

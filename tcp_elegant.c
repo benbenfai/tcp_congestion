@@ -38,7 +38,7 @@ struct elegant {
 	u32 beta;  				 /* multiplicative decrease factor */
 	u32	next_rtt_delivered;
 	u32 prior_cwnd;
-	u32 bw_drop;
+	u32 round;
 };
 
 static u32 beta_scale(const struct elegant *ca, u32 value)
@@ -54,10 +54,12 @@ static u32 beta_scale(const struct elegant *ca, u32 value)
  */
 static u64 bbr_rate_bytes_per_sec(struct sock *sk, const struct elegant *ca, u64 rate, int margin)
 {
+	struct tcp_sock *tp = tcp_sk(sk);
 	unsigned int mss = tcp_sk(sk)->mss_cache;
 
 	rate *= mss;
-	rate = ((rate * 11) >> 3) - ((rate * ca->beta) >> BETA_SHIFT);
+	if (!tcp_in_slow_start(tp))
+		rate = (rate * (88 - ca->beta)) >> BETA_SHIFT;
 	rate >>= BBR_SCALE;
 	rate *= USEC_PER_SEC / 100 * (100 - margin);
 	rate >>= BW_SCALE;
@@ -105,6 +107,18 @@ static void bbr_set_pacing_rate(struct sock *sk, u32 bw)
 		WRITE_ONCE(sk->sk_pacing_rate, rate);
 }
 
+static u64 bbr_calculate_bw_sample(struct sock *sk, const struct rate_sample *rs)
+{
+	u64 bw = 0;
+
+	if (rs->interval_us > 0) {
+		bw = DIV_ROUND_UP_ULL((u64)rs->delivered * BW_UNIT, rs->interval_us);
+	}
+
+	return bw;
+}
+
+
 static u32 bbr_max_bw(const struct sock *sk)
 {
 	const struct elegant *ca= inet_csk_ca(sk);
@@ -125,12 +139,6 @@ static void bbr_advance_max_bw_filter(struct sock *sk)
 
 	if (!ca->bw_hi[1])
 		return;  /* no samples in this window; remember old window */
-
-	if (ca->bw_hi[0] > ca->bw_hi[1]) {
-		ca->bw_drop = 1;
-	} else {
-		ca->bw_drop = 0;
-	}
 	
 	ca->bw_hi[0] = ca->bw_hi[1];
 	ca->bw_hi[1] = 0;
@@ -153,7 +161,7 @@ static void elegant_init(struct sock *sk)
 	ca->beta = BETA_MIN;
 	ca->next_rtt_delivered = tp->delivered;
 	ca->prior_cwnd = tp->snd_ssthresh;
-	ca->bw_drop = 0;
+	ca->round = 0;
 
 	bbr_init_pacing_rate_from_rtt(sk);
 }
@@ -211,18 +219,17 @@ static inline void rtt_reset(struct tcp_sock *tp, struct elegant *ca)
 	ca->cnt_rtt = 0;
 }
 
+static inline u32 copa_ssthresh(struct elegant *ca)
+{
+	return max(2U, ca->rtt_curr * BETA_SCALE / (avg_delay(ca) * (BETA_SCALE - ca->beta)));
+}
+
 static u32 tcp_elegant_ssthresh(struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
-	u32 ssthresh = 0;
-
-	if (ca->bw_drop)
-		WRITE_ONCE(sk->sk_pacing_rate,
-			   bbr_bw_to_pacing_rate(sk, bbr_max_bw(sk)));
-
-	ssthresh = ca->prior_cwnd = max(2U, ca->rtt_curr * BETA_SCALE / (avg_delay(ca) * (BETA_SCALE - ca->beta)));
+	u32 ssthresh = copa_ssthresh(ca);
 	ssthresh = max(ssthresh, beta_scale(ca, tp->snd_cwnd));
 
 	return ssthresh;
@@ -273,7 +280,7 @@ static void elegant_cong_avoid(struct sock *sk, struct elegant *ca, const struct
 		return;
 
 	if (tcp_in_slow_start(tp)) {
-		tp->snd_cwnd = ca->prior_cwnd;
+		tp->snd_cwnd = copa_ssthresh(ca);
 	} else {
 		u32 wwf;
 		u64 wwf64 = tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT;
@@ -308,8 +315,6 @@ static void tcp_elegant_round(struct sock *sk, struct elegant *ca, const struct 
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	u64 bw = 0;
-
 	/* See if we've reached the next RTT */
 	if (rs->interval_us > 0 && !before(rs->prior_delivered, ca->next_rtt_delivered)) {
 		if (ca->round_base_rtt != UINT_MAX) {
@@ -317,13 +322,8 @@ static void tcp_elegant_round(struct sock *sk, struct elegant *ca, const struct 
 			ca->rtt_max = ca->round_rtt_max;
 			update_params(sk);
 			ca->round_base_rtt = UINT_MAX;
-			ca->round_rtt_max = 0;
-			bw = DIV_ROUND_UP_ULL((u64)rs->delivered * BW_UNIT, rs->interval_us);
-			if (!rs->is_app_limited) {
-				bbr_take_max_bw_sample(sk, bw);
-				bbr_advance_max_bw_filter(sk);
-			}
-			bbr_set_pacing_rate(sk, bw);
+			ca->round_rtt_max = 0;			
+			ca->round++;
 		}
 		ca->next_rtt_delivered = tp->delivered;
 	}
@@ -333,13 +333,29 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 {
 	struct elegant *ca = inet_csk_ca(sk);
 
-	if (rs->rtt_us > 0 && (ca->cnt_rtt == 0 || !rs->is_ack_delayed))
+	u64 bw = 0;
+
+	if (rs->rtt_us > 0 && !rs->is_ack_delayed)
 		elegant_update_rtt(ca, rs);
 
 	tcp_elegant_round(sk, ca, rs);
 
-	if (rs->interval_us > 0 && rs->delivered > 0)
+	if (rs->interval_us > 0 && rs->is_ack_delayed) {
 		elegant_cong_avoid(sk, ca, rs);
+		bw = bbr_calculate_bw_sample(sk, rs);
+		if (!rs->is_app_limited || bw > bbr_max_bw(sk))
+			bbr_take_max_bw_sample(sk, bw);
+	}
+
+	bw = bbr_max_bw(sk);
+	bbr_set_pacing_rate(sk, bw);
+
+	if (ca->beta > 24 || ca->round >= 24) {
+		if (ca->round >= 12) {
+			bbr_advance_max_bw_filter(sk);
+			ca->round = 0;
+		}
+	}
 }
 
 static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
@@ -357,9 +373,8 @@ static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 static u32 tcp_elegant_undo_cwnd(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-    struct elegant *ca = inet_csk_ca(sk);
 
-    return max(tp->snd_cwnd, ca->prior_cwnd);
+    return max(tp->snd_cwnd, tp->prior_cwnd);
 }
 
 static struct tcp_congestion_ops tcp_elegant __read_mostly = {

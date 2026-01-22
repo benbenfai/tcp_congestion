@@ -334,6 +334,7 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
+	bool filter_expired;
 	u64 bw = 0;
 
 	if (tcp_in_slow_start(tp) || (rs->rtt_us > 0 && !rs->is_ack_delayed))
@@ -341,22 +342,21 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 
 	tcp_elegant_round(sk, ca, rs);
 
-	if (rs->interval_us > 0 && rs->is_ack_delayed) {
+	if (rs->interval_us > 0 && rs->acked_sacked) {
 		elegant_cong_avoid(sk, ca, rs);
 		bw = bbr_calculate_bw_sample(sk, rs);
 		if (!rs->is_app_limited || bw > bbr_max_bw(sk))
 			bbr_take_max_bw_sample(sk, bw);
 	}
 
+	filter_expired = after(tcp_jiffies32, tcp_jiffies32 + 10 * HZ);
+	if (filter_expired || (ca->beta > 24 && ca->round >= 12)) {
+		bbr_advance_max_bw_filter(sk);
+		ca->round = 0;
+	}
+
 	bw = bbr_max_bw(sk);
 	bbr_set_pacing_rate(sk, bw);
-
-	if (ca->beta > 24 || ca->round >= 24) {
-		if (ca->round >= 12) {
-			bbr_advance_max_bw_filter(sk);
-			ca->round = 0;
-		}
-	}
 }
 
 static void tcp_elegant_set_state(struct sock *sk, u8 new_state)

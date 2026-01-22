@@ -39,6 +39,7 @@ struct elegant {
 	u32	next_rtt_delivered;
 	u32 prior_cwnd;
 	u32 round;
+	u32 reset_time;
 };
 
 static u32 beta_scale(const struct elegant *ca, u32 value)
@@ -162,6 +163,7 @@ static void elegant_init(struct sock *sk)
 	ca->next_rtt_delivered = tp->delivered;
 	ca->prior_cwnd = tp->snd_ssthresh;
 	ca->round = 0;
+	ca->reset_time = tcp_jiffies32;
 
 	bbr_init_pacing_rate_from_rtt(sk);
 }
@@ -349,10 +351,11 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 			bbr_take_max_bw_sample(sk, bw);
 	}
 
-	filter_expired = after(tcp_jiffies32, tcp_jiffies32 + 10 * HZ);
+	filter_expired = after(tcp_jiffies32, ca->reset_time + 10 * HZ);
 	if (filter_expired || (ca->beta > 24 && ca->round >= 12)) {
 		bbr_advance_max_bw_filter(sk);
 		ca->round = 0;
+		ca->reset_time = tcp_jiffies32;
 	}
 
 	bw = bbr_max_bw(sk);

@@ -277,12 +277,17 @@ static inline u64 fast_isqrt(u64 x)
 static void elegant_cong_avoid(struct sock *sk, struct elegant *ca, const struct rate_sample *rs)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
+	
+	u32 ssthresh;
 
 	if (!tcp_is_cwnd_limited(sk))
 		return;
 
 	if (tcp_in_slow_start(tp)) {
-		tp->snd_cwnd = copa_ssthresh(ca);
+		ssthresh = copa_ssthresh(ca);
+		if (ssthresh > tp->snd_cwnd)
+			tp->snd_cwnd = ssthresh;
+		tp->snd_ssthresh = ssthresh;
 	} else {
 		u32 wwf;
 		u64 wwf64 = tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT;

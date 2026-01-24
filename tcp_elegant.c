@@ -231,10 +231,7 @@ static u32 tcp_elegant_ssthresh(struct sock *sk)
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
-	u32 ssthresh = copa_ssthresh(ca);
-	ssthresh = max(ssthresh, beta_scale(ca, tp->snd_cwnd));
-
-	return ssthresh;
+	return max(copa_ssthresh(ca), beta_scale(ca, tp->snd_cwnd));
 }
 
 static void update_params(struct sock *sk)

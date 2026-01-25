@@ -2,7 +2,6 @@
 #include <linux/module.h>
 #include <linux/skbuff.h>
 #include <asm/div64.h>
-#include <linux/bitops.h>
 #include <net/tcp.h>
 
 #define BETA_SHIFT	6
@@ -251,24 +250,23 @@ static void update_params(struct sock *sk)
 	rtt_reset(tp, ca);
 }
 
-static inline u64 fast_isqrt(u64 x)
-{
-	u64 r;
-	int i=0;
+static inline u64 fast_isqrt(u64 x) {
+    u64 result = 0;
+    u64 bit = 1ULL << 62;
     if (x < 2)
         return x;
-
-    /* Initial guess: 1 << (floor(log2(x)) / 2) */
-    r = 1ULL << ((fls64(x) - 1) >> 1);
-
-    /* three Newton iteration */
-    for (i; i<3; i++)
-		r = (r + x / r) >> 1;
-
-	if (r*r>x)
-		r--;
-
-    return r;
+    while (bit > x)
+        bit >>= 2;
+    while (bit) {
+        if (x >= result + bit) {
+            x -= result + bit;
+            result = (result >> 1) + bit;
+        } else {
+            result >>= 1;
+        }
+        bit >>= 2;
+    }
+    return result;
 }
 
 static void elegant_cong_avoid(struct sock *sk, struct elegant *ca, const struct rate_sample *rs)

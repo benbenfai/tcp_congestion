@@ -282,7 +282,7 @@ static void elegant_cong_avoid(struct sock *sk, struct elegant *ca, const struct
 		ssthresh = copa_ssthresh(ca);
 		if (tp->snd_cwnd < ssthresh)
 			tp->snd_cwnd = ssthresh + 1;
-		tp->snd_ssthresh = ssthresh);
+		tp->snd_ssthresh = ssthresh;
 	} else {
 		u32 wwf;
 		u64 wwf64 = tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT;

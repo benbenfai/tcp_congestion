@@ -54,7 +54,6 @@ static u32 beta_scale(const struct elegant *ca, u32 value)
  */
 static u64 bbr_rate_bytes_per_sec(struct sock *sk, const struct elegant *ca, u64 rate, int margin)
 {
-	struct tcp_sock *tp = tcp_sk(sk);
 	unsigned int mss = tcp_sk(sk)->mss_cache;
 
 	rate *= mss;

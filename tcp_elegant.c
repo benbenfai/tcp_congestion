@@ -10,11 +10,6 @@
 #define BETA_MAX	(BETA_SCALE/2)		/* 0.5 */
 #define BETA_BASE	BETA_MAX
 
-#define ELEGANT_SCALE 6
-#define ELEGANT_UNIT (1 << ELEGANT_SCALE)
-#define ELEGANT_UNIT_SQ_SHIFT (2 * ELEGANT_SCALE)        // 12
-#define ELEGANT_UNIT_SQUARED (1ULL << (2 * ELEGANT_SCALE))
-
 #define BW_SCALE 24
 #define BW_UNIT (1 << BW_SCALE)
 
@@ -279,9 +274,9 @@ static void elegant_cong_avoid(struct sock *sk, struct elegant *ca, const struct
 		tcp_slow_start(tp, rs->acked_sacked);
 	} else {
 		u32 wwf;
-		u64 wwf64 = tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT;
+		u64 wwf64 = tp->snd_cwnd * ca->rtt_max;
 		do_div(wwf64, ca->rtt_curr);
-		wwf = fast_isqrt(wwf64) >> ELEGANT_SCALE;
+		wwf = fast_isqrt(wwf64);
 		wwf = max(wwf, 2U);
 		tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 	}

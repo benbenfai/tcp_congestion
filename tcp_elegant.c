@@ -280,7 +280,7 @@ static void elegant_cong_avoid(struct sock *sk, struct elegant *ca, const struct
 		u32 wwf;
 		u64 wwf64 = tp->snd_cwnd * ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT;
 		do_div(wwf64, ca->rtt_curr);
-		wwf = fast_isqrt(wwf64) >> >> ELEGANT_SCALE;
+		wwf = fast_isqrt(wwf64) >> ELEGANT_SCALE;
 		wwf = max(wwf, 2U);
 		tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 	}

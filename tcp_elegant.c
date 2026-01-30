@@ -37,6 +37,7 @@ struct elegant {
 	u32 beta;  				 /* multiplicative decrease factor */
 	u32	next_rtt_delivered;
 	u64 ratio;
+	u32 inv_beta;
 	u32 round;
 	u32 reset_time;
 };
@@ -57,7 +58,7 @@ static u64 bbr_rate_bytes_per_sec(struct sock *sk, const struct elegant *ca, u64
 	unsigned int mss = tcp_sk(sk)->mss_cache;
 
 	rate *= mss;
-	rate = (rate * (88 - ca->beta)) >> BETA_SHIFT;
+	rate = (rate * (ca->inv_beta)) >> BETA_SHIFT;
 	rate >>= BBR_SCALE;
 	rate *= USEC_PER_SEC / 100 * (100 - margin);
 	rate >>= BW_SCALE;
@@ -159,6 +160,7 @@ static void elegant_init(struct sock *sk)
 	ca->beta = BETA_MIN;
 	ca->next_rtt_delivered = tp->delivered;
 	ca->ratio = 0;
+	ca->inv_beta = 0;
 	ca->round = 0;
 	ca->reset_time = tcp_jiffies32;
 
@@ -243,6 +245,7 @@ static void update_params(struct sock *sk)
 		u32 da = avg_delay(ca);
 
 		ca->beta = beta(da, dm);
+		ca->inv_beta = 88 - ca->beta;
 	}
 
 	rtt_reset(tp, ca);
@@ -278,12 +281,13 @@ static void elegant_cong_avoid(struct sock *sk, struct elegant *ca, const struct
 		tp->snd_ssthresh = copa_ssthresh(ca);
 		tcp_slow_start(tp, rs->acked_sacked);
 	} else {
+		u32 wwf;
 		u64 ratio = ca->ratio;
 		if (ratio == 0)
-			ratio = (ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT);
+			ratio = ((u64)ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT);
 			do_div(ratio, ca->rtt_curr);
 			ca->ratio = ratio;
-		u32 wwf = fast_isqrt(tp->snd_cwnd * ratio) >> ELEGANT_SCALE;
+		wwf = fast_isqrt(tp->snd_cwnd * ratio) >> ELEGANT_SCALE;
 		wwf = max(wwf, 2U);
 		tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 	}
@@ -323,7 +327,6 @@ static void tcp_elegant_round(struct sock *sk, struct elegant *ca, const struct 
 			ca->round_base_rtt = UINT_MAX;
 			ca->round_rtt_max = 0;
 			ca->ratio = 0;
-			ca->beta_ratio = 0;
 			ca->round++;
 		}
 		ca->next_rtt_delivered = tp->delivered;

@@ -6,8 +6,8 @@
 
 #define BETA_SHIFT	6
 #define BETA_SCALE	(1u<<BETA_SHIFT)
-#define BETA_MIN	(BETA_SCALE/8)		/* 0.125 */
-#define BETA_MAX	(BETA_SCALE/2)		/* 0.5 */
+#define BETA_MIN (BETA_SCALE >> 3) /* 0.125 */
+#define BETA_MAX (BETA_SCALE >> 1) /* 0.5 */
 #define BETA_BASE	BETA_MAX
 
 #define ELEGANT_SCALE 6
@@ -21,7 +21,7 @@
 #define BBR_SCALE 8	/* scaling factor for fractions in BBR (e.g. gains) */
 #define BBR_UNIT (1 << BBR_SCALE)
 
-static int win_thresh __read_mostly = 15; /* Increased threshold for adaptive alpha/beta */
+static int win_thresh __read_mostly = 32; /* Increased threshold for adaptive alpha/beta */
 module_param(win_thresh, int, 0);
 MODULE_PARM_DESC(win_thresh, "Window threshold for starting adaptive sizing");
 
@@ -42,10 +42,9 @@ struct elegant {
 	u32 reset_time;
 };
 
-static u32 beta_scale(const struct elegant *ca, u32 value)
+static inline u32 beta_scale(const struct elegant *ca, u32 value)
 {
-    u32 decr = (value * ca->beta) >> BETA_SHIFT;
-
+    u32 decr = mult_frac(value, ca->beta, BETA_SCALE);
     return value - decr;
 }
 
@@ -58,7 +57,8 @@ static u64 bbr_rate_bytes_per_sec(struct sock *sk, const struct elegant *ca, u64
 	unsigned int mss = tcp_sk(sk)->mss_cache;
 
 	rate *= mss;
-	rate = (rate * (ca->inv_beta)) >> BETA_SHIFT;
+	//rate = (rate * (ca->inv_beta)) >> BETA_SHIFT;
+	rate = mult_frac(rate, ca->inv_beta, BETA_SCALE);
 	rate >>= BBR_SCALE;
 	rate *= USEC_PER_SEC / 100 * (100 - margin);
 	rate >>= BW_SCALE;
@@ -108,15 +108,10 @@ static void bbr_set_pacing_rate(struct sock *sk, u32 bw)
 
 static u64 bbr_calculate_bw_sample(struct sock *sk, const struct rate_sample *rs)
 {
-	u64 bw = 0;
-
-	if (rs->interval_us > 0) {
-		bw = DIV_ROUND_UP_ULL((u64)rs->delivered * BW_UNIT, rs->interval_us);
-	}
-
-	return bw;
+	if (rs->interval_us <= 0)
+        return 0;
+    return DIV_ROUND_UP_ULL((u64)rs->delivered * BW_UNIT, rs->interval_us);
 }
-
 
 static u32 bbr_max_bw(const struct sock *sk)
 {
@@ -177,7 +172,9 @@ static inline u32 max_delay(const struct elegant *ca)
 static inline u32 avg_delay(struct elegant *ca)
 {
 	u64 t = ca->sum_rtt;
-
+	if (ca->cnt_rtt == 0) {
+        return ca->rtt_curr - ca->base_rtt;
+    }
 	do_div(t, ca->cnt_rtt);
 
 	ca->rtt_curr = t;
@@ -222,7 +219,9 @@ static inline void rtt_reset(struct tcp_sock *tp, struct elegant *ca)
 
 static inline u32 copa_ssthresh(struct elegant *ca)
 {
-	return max(2U, ca->rtt_curr * BETA_SCALE / (avg_delay(ca) * (BETA_SCALE - ca->beta)));
+	u32 ad = avg_delay(ca);
+    if (ad == 0) return 2U;
+	return max(2U, ca->rtt_curr * BETA_SCALE / (ad * (BETA_SCALE - ca->beta)));
 }
 
 static u32 tcp_elegant_ssthresh(struct sock *sk)
@@ -253,7 +252,7 @@ static void update_params(struct sock *sk)
 
 static inline u64 fast_isqrt(u64 x) {
     u64 result = 0;
-    u64 bit = 1ULL << 62;
+    u64 bit = BIT_ULL(62);
     if (x < 2)
         return x;
     while (bit > x)

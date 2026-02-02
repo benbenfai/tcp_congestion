@@ -44,8 +44,7 @@ struct elegant {
 
 static inline u32 beta_scale(const struct elegant *ca, u32 value)
 {
-    u32 decr = mult_frac(value, ca->beta, BETA_SCALE);
-    return value - decr;
+    return value - ((value * ca->beta) >> BETA_SHIFT);
 }
 
 /* Return rate in bytes per second, optionally with a gain.
@@ -57,8 +56,7 @@ static u64 bbr_rate_bytes_per_sec(struct sock *sk, const struct elegant *ca, u64
 	unsigned int mss = tcp_sk(sk)->mss_cache;
 
 	rate *= mss;
-	//rate = (rate * (ca->inv_beta)) >> BETA_SHIFT;
-	rate = mult_frac(rate, ca->inv_beta, BETA_SCALE);
+	rate = (rate * (ca->inv_beta)) >> BETA_SHIFT;
 	rate >>= BBR_SCALE;
 	rate *= USEC_PER_SEC / 100 * (100 - margin);
 	rate >>= BW_SCALE;
@@ -172,9 +170,7 @@ static inline u32 max_delay(const struct elegant *ca)
 static inline u32 avg_delay(struct elegant *ca)
 {
 	u64 t = ca->sum_rtt;
-	if (ca->cnt_rtt == 0) {
-        return ca->rtt_curr - ca->base_rtt;
-    }
+
 	do_div(t, ca->cnt_rtt);
 
 	ca->rtt_curr = t;
@@ -284,10 +280,9 @@ static void elegant_cong_avoid(struct sock *sk, struct elegant *ca, const struct
 		u64 ratio = ca->ratio;
 		if (ratio == 0)
 			ratio = ((u64)ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT);
-			do_div(ratio, ca->rtt_curr);
+			DIV_ROUND_UP_ULL(ratio, ca->rtt_curr);
 			ca->ratio = ratio;
 		wwf = fast_isqrt(tp->snd_cwnd * ratio) >> ELEGANT_SCALE;
-		wwf = max(wwf, 2U);
 		tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 	}
 }
@@ -338,6 +333,7 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 	struct elegant *ca = inet_csk_ca(sk);
 
 	bool filter_expired;
+	bool bw_update = false;
 	u64 bw = 0;
 
 	if (tcp_in_slow_start(tp) || (rs->rtt_us > 0 && !rs->is_ack_delayed))
@@ -348,8 +344,10 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 	if (rs->interval_us > 0 && rs->acked_sacked) {
 		elegant_cong_avoid(sk, ca, rs);
 		bw = bbr_calculate_bw_sample(sk, rs);
-		if (!rs->is_app_limited || bw > bbr_max_bw(sk))
+		if (!rs->is_app_limited || bw > bbr_max_bw(sk)) {
 			bbr_take_max_bw_sample(sk, bw);
+			bw_update = true;
+		}
 	}
 
 	filter_expired = after(tcp_jiffies32, ca->reset_time + 10 * HZ);
@@ -359,8 +357,10 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 		ca->reset_time = tcp_jiffies32;
 	}
 
-	bw = bbr_max_bw(sk);
-	bbr_set_pacing_rate(sk, bw);
+	if (bw_update || ca->round = 0) {
+		bw = bbr_max_bw(sk);
+		bbr_set_pacing_rate(sk, bw);
+	}
 }
 
 static void tcp_elegant_set_state(struct sock *sk, u8 new_state)

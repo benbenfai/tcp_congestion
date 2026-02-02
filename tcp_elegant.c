@@ -357,7 +357,7 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 		ca->reset_time = tcp_jiffies32;
 	}
 
-	if (bw_update || ca->round = 0) {
+	if (bw_update || ca->round == 0) {
 		bw = bbr_max_bw(sk);
 		bbr_set_pacing_rate(sk, bw);
 	}

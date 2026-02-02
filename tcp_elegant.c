@@ -321,8 +321,8 @@ static void tcp_elegant_round(struct sock *sk, struct elegant *ca, const struct 
 			ca->round_base_rtt = UINT_MAX;
 			ca->round_rtt_max = 0;
 			ca->ratio = 0;
-			ca->round++;
 		}
+		ca->round++;
 		ca->next_rtt_delivered = tp->delivered;
 	}
 }

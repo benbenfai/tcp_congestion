@@ -278,10 +278,11 @@ static void elegant_cong_avoid(struct sock *sk, struct elegant *ca, const struct
 	} else {
 		u32 wwf;
 		u64 ratio = ca->ratio;
-		if (ratio == 0)
+		if (ratio == 0) {
 			ratio = ((u64)ca->rtt_max << ELEGANT_UNIT_SQ_SHIFT);
-			DIV_ROUND_UP_ULL(ratio, ca->rtt_curr);
+			ratio = DIV_ROUND_UP_ULL(ratio, ca->rtt_curr);
 			ca->ratio = ratio;
+		}
 		wwf = fast_isqrt(tp->snd_cwnd * ratio) >> ELEGANT_SCALE;
 		tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
 	}

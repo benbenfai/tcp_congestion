@@ -2,6 +2,7 @@
 #include <linux/module.h>
 #include <linux/skbuff.h>
 #include <asm/div64.h>
+#include <linux/log2.h>
 #include <net/tcp.h>
 
 #define BETA_SHIFT	6
@@ -233,11 +234,13 @@ static void update_params(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
-    if (tp->snd_cwnd < win_thresh) {
-        ca->beta = BETA_BASE;
+	u32 da = avg_delay(ca);
+	u32 thresh = 1 << (ilog2((bbr_max_bw(sk) * da)/tp->tp->mss_cache))
+
+    if (tp->snd_cwnd < thresh) {
+        ca->beta = BETA_MIN;
     } else if (ca->cnt_rtt > 0) {
 		u32 dm = max_delay(ca);
-		u32 da = avg_delay(ca);
 
 		ca->beta = beta(da, dm);
 		ca->inv_beta = 88 - ca->beta;

@@ -235,7 +235,7 @@ static void update_params(struct sock *sk)
 	struct elegant *ca = inet_csk_ca(sk);
 
 	u32 da = avg_delay(ca);
-	u64 thresh = max(15, 1 << (ilog2((bbr_max_bw(sk) * da)/tp->mss_cache)));
+	u64 thresh = max(15, 2 * (ilog2((bbr_max_bw(sk) * da)/tp->mss_cache)));
 
     if (tp->snd_cwnd < thresh) {
         ca->beta = BETA_MIN;

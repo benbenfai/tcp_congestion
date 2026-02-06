@@ -22,15 +22,12 @@
 #define BBR_SCALE 8	/* scaling factor for fractions in BBR (e.g. gains) */
 #define BBR_UNIT (1 << BBR_SCALE)
 
-static int win_thresh __read_mostly = 32; /* Increased threshold for adaptive alpha/beta */
-module_param(win_thresh, int, 0);
-MODULE_PARM_DESC(win_thresh, "Window threshold for starting adaptive sizing");
-
 struct elegant {
 	u64 sum_rtt;               /* sum of RTTs in last round */
     u32 cnt_rtt;            /* samples in this RTT */
 	u32	round_base_rtt;	/* min of all rtt in usec */
 	u32	round_rtt_max;
+	u32	bw_hi[2];	 /* max recent measured bw sample */
 	u32 reset_time;
 	u32	base_rtt;	/* min of all rtt in usec */
     u32	rtt_max;
@@ -39,7 +36,6 @@ struct elegant {
 	u32 inv_beta;
 	u32 round;
 	u32	next_rtt_delivered;
-	u32	bw_hi[2];	 /* max recent measured bw sample */
 	u64 ratio;
 };
 
@@ -146,6 +142,8 @@ static void elegant_init(struct sock *sk)
 	ca->cnt_rtt = 0;
 	ca->round_base_rtt = UINT_MAX;
 	ca->round_rtt_max = 0;
+	ca->bw_hi[0] = 0;
+	ca->bw_hi[1] = 0;
 	ca->reset_time = tcp_jiffies32;
 	ca->base_rtt = UINT_MAX;
 	ca->rtt_max = 0;
@@ -154,8 +152,6 @@ static void elegant_init(struct sock *sk)
 	ca->inv_beta = 0;
 	ca->round = 0;
 	ca->next_rtt_delivered = tp->delivered;
-	ca->bw_hi[0] = 0;
-	ca->bw_hi[1] = 0;
 	ca->ratio = 0;
 
 	bbr_init_pacing_rate_from_rtt(sk);

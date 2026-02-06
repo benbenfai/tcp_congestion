@@ -31,16 +31,16 @@ struct elegant {
     u32 cnt_rtt;            /* samples in this RTT */
 	u32	round_base_rtt;	/* min of all rtt in usec */
 	u32	round_rtt_max;
+	u32 reset_time;
 	u32	base_rtt;	/* min of all rtt in usec */
     u32	rtt_max;
 	u32	rtt_curr;
-	u32	bw_hi[2];	 /* max recent measured bw sample */
 	u32 beta;  				 /* multiplicative decrease factor */
-	u32	next_rtt_delivered;
-	u64 ratio;
 	u32 inv_beta;
 	u32 round;
-	u32 reset_time;
+	u32	next_rtt_delivered;
+	u32	bw_hi[2];	 /* max recent measured bw sample */
+	u64 ratio;
 };
 
 static inline u32 beta_scale(const struct elegant *ca, u32 value)
@@ -146,17 +146,17 @@ static void elegant_init(struct sock *sk)
 	ca->cnt_rtt = 0;
 	ca->round_base_rtt = UINT_MAX;
 	ca->round_rtt_max = 0;
+	ca->reset_time = tcp_jiffies32;
 	ca->base_rtt = UINT_MAX;
 	ca->rtt_max = 0;
 	ca->rtt_curr = 0;
-	ca->bw_hi[0] = 0;
-	ca->bw_hi[1] = 0;
 	ca->beta = BETA_MIN;
-	ca->next_rtt_delivered = tp->delivered;
-	ca->ratio = 0;
 	ca->inv_beta = 0;
 	ca->round = 0;
-	ca->reset_time = tcp_jiffies32;
+	ca->next_rtt_delivered = tp->delivered;
+	ca->bw_hi[0] = 0;
+	ca->bw_hi[1] = 0;
+	ca->ratio = 0;
 
 	bbr_init_pacing_rate_from_rtt(sk);
 }

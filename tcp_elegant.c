@@ -165,14 +165,22 @@ static inline u32 max_delay(const struct elegant *ca)
 }
 
 /* Average queuing delay */
-static inline u32 avg_delay(struct elegant *ca)
+static inline u32 avg_delay(struct tcp_sock *tp, struct elegant *ca)
 {
 	u64 t = ca->sum_rtt;
 
+    if (ca->cnt_rtt == 0) {
+		u32 srtt = tp->srtt_us;
+        u32 base = ca->round_base_rtt;
+		ca->rtt_curr = srtt;
+        if (srtt > base)
+            return srtt - base;
+
+        return max(srtt >> 4, 1U);
+    }
+
 	do_div(t, ca->cnt_rtt);
-
-	ca->rtt_curr = t;
-
+	ca->rtt_curr = (u32)t;
 	return t - ca->base_rtt;
 }
 
@@ -210,18 +218,16 @@ static inline void rtt_reset(struct tcp_sock *tp, struct elegant *ca)
 	ca->cnt_rtt = 0;
 }
 
-static inline u32 copa_ssthresh(struct elegant *ca)
+static inline u32 copa_ssthresh(struct tcp_sock *tp, struct elegant *ca)
 {
-	u32 ad = avg_delay(ca);
-    if (ad == 0) return 2U;
-	return max(2U, ca->rtt_curr * BETA_SCALE / (ad * (BETA_SCALE - ca->beta)));
+	return max(2U, ca->rtt_curr * BETA_SCALE / (avg_delay(tp, ca) * (BETA_SCALE - ca->beta)));
 }
 
 static u32 tcp_elegant_ssthresh(struct sock *sk)
 {
-	const struct tcp_sock *tp = tcp_sk(sk);
+	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
-	return max(copa_ssthresh(ca), beta_scale(ca, tp->snd_cwnd));
+	return max(copa_ssthresh(tp, ca), beta_scale(ca, tp->snd_cwnd));
 }
 
 static void update_params(struct sock *sk)
@@ -229,7 +235,7 @@ static void update_params(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
-	u32 da = avg_delay(ca);
+	u32 da = avg_delay(tp, ca);
     u64 thresh_arg = ((u64)bbr_max_bw(sk) * da) / tp->mss_cache;
     u32 thresh = max_t(u32, win_thresh, 2 * (thresh_arg ? ilog2(thresh_arg) : 0));
 
@@ -254,7 +260,7 @@ static void elegant_cong_avoid(struct sock *sk, struct elegant *ca, const struct
 		return;
 
 	if (tcp_in_slow_start(tp)) {
-		tp->snd_ssthresh = copa_ssthresh(ca);
+		tp->snd_ssthresh = copa_ssthresh(tp, ca);
 		tcp_slow_start(tp, rs->acked_sacked);
 	} else {
 		u32 wwf;

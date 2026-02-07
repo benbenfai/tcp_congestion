@@ -2,7 +2,7 @@
 #include <linux/module.h>
 #include <linux/skbuff.h>
 #include <asm/div64.h>
-#include <linux/log2.h>
+#include <linux/bitops.h>
 #include <linux/math64.h>
 #include <net/tcp.h>
 
@@ -67,7 +67,8 @@ static u64 bbr_rate_bytes_per_sec(struct sock *sk, const struct elegant *ca, u64
 static unsigned long bbr_bw_to_pacing_rate(struct sock *sk, u32 bw)
 {
 	struct elegant *ca = inet_csk_ca(sk);
-	u64 rate = bbr_rate_bytes_per_sec(sk, ca, rate, 1);
+	u64 rate = bw;
+	rate = bbr_rate_bytes_per_sec(sk, ca, rate, 1);
 	rate = min(rate, (u64)READ_ONCE(sk->sk_max_pacing_rate));
 	return rate;
 }
@@ -88,7 +89,7 @@ static void bbr_init_pacing_rate_from_rtt(struct sock *sk)
 	WRITE_ONCE(sk->sk_pacing_rate, bbr_bw_to_pacing_rate(sk, bw));
 }
 
-static void bbr_set_pacing_rate(struct sock *sk, u32 bw)
+static void bbr_set_pacing_rate(struct sock *sk, u64 bw)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
@@ -96,7 +97,7 @@ static void bbr_set_pacing_rate(struct sock *sk, u32 bw)
 
 	if (unlikely(ca->cnt_rtt > 0 && tp->srtt_us))
 		bbr_init_pacing_rate_from_rtt(sk);
-	rate = max(rate, 120UL);
+	rate = max(rate, 120ULL);
 	if (rate > READ_ONCE(sk->sk_pacing_rate))
 		WRITE_ONCE(sk->sk_pacing_rate, rate);
 }
@@ -114,7 +115,7 @@ static u32 bbr_max_bw(const struct sock *sk)
 	return max(ca->bw_hi[0], ca->bw_hi[1]);
 }
 
-static void bbr_take_max_bw_sample(struct sock *sk, u32 bw)
+static void bbr_take_max_bw_sample(struct sock *sk, u64 bw)
 {
 	struct elegant *ca = inet_csk_ca(sk);
 	ca->bw_hi[1] = max(bw, ca->bw_hi[1]);
@@ -228,7 +229,7 @@ static void update_params(struct sock *sk)
 
 	u32 da = avg_delay(ca);
     u64 thresh_arg = ((u64)bbr_max_bw(sk) * da) / tp->mss_cache;
-    u32 thresh = max(15U, 2 * (thresh_arg ? (fls64(thresh_arg) - 1) : 0));
+    u32 thresh = max_t(u32, 15U, 2 * (thresh_arg ? ilog2(thresh_arg) : 0));
 
     if (tp->snd_cwnd < thresh) {
         ca->beta = BETA_MIN;

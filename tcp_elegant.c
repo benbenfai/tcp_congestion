@@ -347,19 +347,17 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 			bbr_take_max_bw_sample(sk, bw);
 			bw_update = true;
 		}
+		filter_expired = after(tcp_jiffies32, ca->reset_time + 10 * HZ);
+		if (filter_expired || (ca->beta > 24 && ca->round >= 12)) {
+			bbr_advance_max_bw_filter(sk);
+			ca->round = 0;
+			ca->reset_time = tcp_jiffies32;
+		}
 		elegant_cong_avoid(sk, ca, rs);
-	}
-
-	filter_expired = after(tcp_jiffies32, ca->reset_time + 10 * HZ);
-	if (filter_expired || (ca->beta > 24 && ca->round >= 12)) {
-		bbr_advance_max_bw_filter(sk);
-		ca->round = 0;
-		ca->reset_time = tcp_jiffies32;
-	}
-
-	if (bw_update || ca->round == 0) {
-		bw = bbr_max_bw(sk);
-		bbr_set_pacing_rate(sk, bw);
+		if (bw_update || ca->round == 0) {
+			bw = bbr_max_bw(sk);
+			bbr_set_pacing_rate(sk, bw);
+		}
 	}
 }
 

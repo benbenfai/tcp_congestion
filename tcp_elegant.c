@@ -23,6 +23,10 @@
 #define BBR_SCALE 8	/* scaling factor for fractions in BBR (e.g. gains) */
 #define BBR_UNIT (1 << BBR_SCALE)
 
+static int win_thresh __read_mostly = 15U;
+static int inv_beta_init __read_mostly = 80U;
+static int inv_beta_base __read_mostly = 88U;
+
 struct elegant {
     u64 sum_rtt;               /* Sum of RTTs in last round */
     u64 ratio;                 /* Cached rtt_max / rtt_curr ratio */
@@ -37,7 +41,6 @@ struct elegant {
     u32 rtt_curr;              /* Current avg RTT */
     u32 beta;                  /* Multiplicative decrease factor */
     u32 inv_beta;              /* Inverse beta for pacing gain */
-
     u32 round;                 /* Round counter */
     u32 reset_time;            /* Time for BW filter reset */
 };
@@ -148,8 +151,7 @@ static void elegant_init(struct sock *sk)
     ca->rtt_max = 0;
     ca->rtt_curr = 0;
     ca->beta = BETA_MIN;
-    ca->inv_beta = 88 - BETA_MIN;
-
+    ca->inv_beta = inv_beta_init;
     ca->round = 0;
     ca->reset_time = tcp_jiffies32;
 
@@ -229,16 +231,16 @@ static void update_params(struct sock *sk)
 
 	u32 da = avg_delay(ca);
     u64 thresh_arg = ((u64)bbr_max_bw(sk) * da) / tp->mss_cache;
-    u32 thresh = max_t(u32, 15U, 2 * (thresh_arg ? ilog2(thresh_arg) : 0));
+    u32 thresh = max_t(u32, win_thresh, 2 * (thresh_arg ? ilog2(thresh_arg) : 0));
 
     if (tp->snd_cwnd < thresh) {
         ca->beta = BETA_MIN;
-		ca->inv_beta = 88 - BETA_MIN;
+		ca->inv_beta = inv_beta_init;
     } else if (ca->cnt_rtt > 0) {
 		u32 dm = max_delay(ca);
 
 		ca->beta = beta(da, dm);
-		ca->inv_beta = 88 - ca->beta;
+		ca->inv_beta = inv_beta_base - ca->beta;
 	}
 
 	rtt_reset(tp, ca);
@@ -313,7 +315,6 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 	struct elegant *ca = inet_csk_ca(sk);
 
 	bool filter_expired;
-	bool bw_update = false;
 	u64 bw = 0;
 
 	if (tcp_in_slow_start(tp) || (rs->rtt_us > 0 && !rs->is_ack_delayed))
@@ -323,21 +324,20 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 
 	if (rs->interval_us > 0 && rs->acked_sacked) {
 		bw = bbr_calculate_bw_sample(sk, rs);
-		if (!rs->is_app_limited || bw > bbr_max_bw(sk)) {
+		if (unlikely(bw > bbr_max_bw(sk))) {
 			bbr_take_max_bw_sample(sk, bw);
-			bw_update = true;
+			bbr_set_pacing_rate(sk, bw);
+		} else if (!rs->is_app_limited) {
+			bbr_take_max_bw_sample(sk, bw);
 		}
 		filter_expired = after(tcp_jiffies32, ca->reset_time + 10 * HZ);
 		if (filter_expired || (ca->beta > 24 && ca->round >= 12)) {
 			bbr_advance_max_bw_filter(sk);
 			ca->round = 0;
 			ca->reset_time = tcp_jiffies32;
+			bbr_set_pacing_rate(sk, bbr_max_bw(sk));
 		}
 		elegant_cong_avoid(sk, ca, rs);
-		if (bw_update || ca->round == 0) {
-			bw = bbr_max_bw(sk);
-			bbr_set_pacing_rate(sk, bw);
-		}
 	}
 }
 

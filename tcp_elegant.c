@@ -46,7 +46,7 @@ struct elegant {
 	u32 next_rtt_delivered;    /* Next RTT boundary (matches tp->delivered) */
     u32 bw_hi[2];              /* Max recent measured BW samples) */
 	u32 reset_time;            /* Time for BW filter reset */
-};
+} __attribute__((aligned(64)));
 
 static inline u32 beta_scale(const struct elegant *ca, u32 value)
 {
@@ -71,8 +71,7 @@ static u64 bbr_rate_bytes_per_sec(struct sock *sk, const struct elegant *ca, u64
 static unsigned long bbr_bw_to_pacing_rate(struct sock *sk, u32 bw)
 {
 	struct elegant *ca = inet_csk_ca(sk);
-	u64 rate = bw;
-	rate = bbr_rate_bytes_per_sec(sk, ca, rate, 1);
+	u64 rate = bbr_rate_bytes_per_sec(sk, ca, bw, 1);
 	rate = min(rate, (u64)READ_ONCE(sk->sk_max_pacing_rate));
 	return rate;
 }
@@ -99,7 +98,7 @@ static void bbr_set_pacing_rate(struct sock *sk, u64 bw)
 	struct elegant *ca = inet_csk_ca(sk);
 	u64 rate = bbr_bw_to_pacing_rate(sk, bw);
 
-	if (unlikely(ca->cnt_rtt > 0 && tp->srtt_us))
+	if (unlikely(!ca->cnt_rtt && tp->srtt_us))
 		bbr_init_pacing_rate_from_rtt(sk);
 	rate = max(rate, 120ULL);
 	if (rate > READ_ONCE(sk->sk_pacing_rate))
@@ -341,6 +340,7 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 	tcp_elegant_round(sk, ca, rs);
 
 	if (rs->interval_us > 0 && rs->acked_sacked) {
+		elegant_cong_avoid(sk, ca, rs);
 		bw = bbr_calculate_bw_sample(sk, rs);
 		if (unlikely(bw > bbr_max_bw(sk))) {
 			bbr_take_max_bw_sample(sk, bw);
@@ -350,12 +350,11 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 		}
 		filter_expired = after(tcp_jiffies32, ca->reset_time + 10 * HZ);
 		if (filter_expired || (ca->beta > 24 && ca->round >= 12)) {
-			bbr_advance_max_bw_filter(sk);
 			ca->round = 0;
-			ca->reset_time = tcp_jiffies32;
+			bbr_advance_max_bw_filter(sk);
 			bbr_set_pacing_rate(sk, bbr_max_bw(sk));
+			ca->reset_time = tcp_jiffies32;
 		}
-		elegant_cong_avoid(sk, ca, rs);
 	}
 }
 

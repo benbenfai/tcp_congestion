@@ -47,7 +47,7 @@ struct elegant {
 	u32 next_rtt_delivered;    /* Next RTT boundary (matches tp->delivered) */
     u32 bw_hi[2];              /* Max recent measured BW samples) */
 	u32 reset_time;            /* Time for BW filter reset */
-} __attribute__((aligned(64)));
+};
 
 static inline u32 beta_scale(const struct elegant *ca, u32 value)
 {
@@ -363,7 +363,6 @@ static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *
 
 static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 {
-	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
 	if (new_state == TCP_CA_Loss) {

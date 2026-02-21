@@ -373,6 +373,7 @@ static u32 tcp_elegant_bw_rttmin(const struct sock *sk)
 
 static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 {
+	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
 	if (new_state == TCP_CA_Loss) {

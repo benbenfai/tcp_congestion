@@ -1,203 +1,223 @@
 #include <linux/module.h>
-#include <net/tcp.h>
-#include <linux/jiffies.h>
-#include <linux/math64.h>
 #include <linux/kernel.h>
+#include <linux/version.h>
+#include <linux/int_sqrt.h>
+#include <linux/math64.h>
+#include <linux/time64.h>
+#include <net/tcp.h>
 
-#define ELEGANT_SCALE 6
-#define ELEGANT_UNIT (1 << ELEGANT_SCALE)          // 64
-#define E_UNIT_SQ_SHIFT (2 * ELEGANT_SCALE)        // 12
-#define E_UNIT_SQ (1ULL << E_UNIT_SQ_SHIFT)     // 4096
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 19, 0)
+static inline u32 tcp_snd_cwnd(const struct tcp_sock *tp)
+{
+	return tp->snd_cwnd;
+}
 
-#define ALPHA_SHIFT	7
-#define ALPHA_SCALE	(1u<<ALPHA_SHIFT)
-#define ALPHA_MIN	((3*ALPHA_SCALE)/10)	/* ~0.3 */
-#define ALPHA_MAX	(12*ALPHA_SCALE)	/* 10.0 */
-#define ALPHA_BASE	ALPHA_SCALE		/* 1.0 */
-#define RTT_MAX		(U32_MAX / ALPHA_MAX)	/* 3.3 secs */
+static inline void tcp_snd_cwnd_set(struct tcp_sock *tp, u32 val)
+{
+	tp->snd_cwnd = val;
+}
+#endif
 
-#define BETA_SHIFT	6
-#define BETA_SCALE	(1u<<BETA_SHIFT)
-#define BETA_MIN	(BETA_SCALE/16)		/* 0.125 */
-#define BETA_MAX	(BETA_SCALE/2)		/* 0.5 */
-#define BETA_BASE	BETA_MAX
-#define BETA_SUM   (BETA_SCALE + BETA_MIN + BETA_MAX)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 9, 0)
+#define tcp_time_stamp_ts(tp)	tcp_time_stamp(tp)
+#endif
+
+#define ELEGANT_SCALE		6
+#define E_UNIT_SQ_SHIFT		(2 * ELEGANT_SCALE)
+
+#define ALPHA_SHIFT		7
+#define ALPHA_SCALE		(1u << ALPHA_SHIFT)
+#define ALPHA_MIN		((3 * ALPHA_SCALE) / 10)
+#define ALPHA_MAX		(10 * ALPHA_SCALE)
+#define ALPHA_BASE		ALPHA_SCALE
+#define RTT_MAX			(U32_MAX / ALPHA_MAX)
+
+#define BETA_SHIFT		6
+#define BETA_SCALE		(1u << BETA_SHIFT)
+#define BETA_MIN		(BETA_SCALE / 8)
+#define BETA_MAX		(BETA_SCALE / 2)
+#define BETA_BASE		BETA_MAX
+
+#define LP_SOWD_SHIFT		3
+#define LP_OWD_MAX		(U32_MAX >> LP_SOWD_SHIFT)
+
+#define LP_INFERENCE_MAX_MS	10000u
+#define LP_REMOTE_HZ_MAX	1000000u
+#define WWF_CAP_MAX		(1u << 20)
 
 static const u32 lt_intvl_min_rtts = 4;
 static const u32 cwnd_min_target = 4;
 
-static int win_thresh __read_mostly = 20; /* Increased threshold for adaptive alpha/beta */
-module_param(win_thresh, int, 0);
+static int win_thresh __read_mostly = 20;
+module_param(win_thresh, int, 0644);
 MODULE_PARM_DESC(win_thresh, "Window threshold for starting adaptive sizing");
 
 static int theta __read_mostly = 5;
-module_param(theta, int, 0);
+module_param(theta, int, 0644);
 MODULE_PARM_DESC(theta, "# of fast RTT's before full growth");
 
-/* resolution of owd */
-#define LP_RESOL       TCP_TS_HZ
-
-/**
- * enum tcp_lp_state
- * @LP_VALID_RHZ: is remote HZ valid?
- * @LP_VALID_OWD: is OWD valid?
- * @LP_WITHIN_THR: are we within threshold?
- * @LP_WITHIN_INF: are we within inference?
- *
- * TCP-LP's state flags.
- * We create this set of state flag mainly for debugging.
- */
 enum tcp_lp_state {
-	LP_VALID_RHZ = (1 << 0),
-	LP_VALID_OWD = (1 << 1),
-	LP_WITHIN_THR = (1 << 3),
-	LP_WITHIN_INF = (1 << 4),
+	LP_VALID_RHZ	= (1 << 0),
+	LP_VALID_OWD	= (1 << 1),
+	LP_WITHIN_THR	= (1 << 2),
+	LP_WITHIN_INF	= (1 << 3),
 };
 
 struct elegant {
+	u64	sum_rtt_us;
 
-	u32 flag;
-	u32 sowd;
-	u32 owd_min;
-	u32 owd_max;
-	u32 owd_max_rsv;
-	u32 remote_hz;
-	u32 remote_ref_time;
-	u32 local_ref_time;
-	u32 last_drop;
-	u32 inference;
+	u32	flag;
+	u32	sowd_scaled;
+	u32	owd_min_ts;
+	u32	owd_max_ts;
+	u32	owd_max_rsv_ts;
+	u32	remote_hz;
+	u32	remote_ref_time;
+	u32	local_ref_time;
+	u32	last_drop_ts;
+	u32	inference_ts;
+	u32	round_end_seq;
+	u32	max_rtt_us;
+	u32	round_max_rtt_us;
+	u32	rtt_curr_us;
+	u32	prior_cwnd;
+	u32	cached_wwf;
+	u32	alpha;
+	u32	beta;
 
-	u64   sum_rtt;               /* sum of RTTs in last round */
+	u16	cnt_rtt;
 
-    u32   base_rtt;              /* base RTT */
-    u32   max_rtt;               /* max RTT in last round */
-	u32   rtt_curr;              /* current RTT, per-ACK update */
-    u32   next_rtt_delivered;    /* delivered count at round start */
-
-	u32   prior_cwnd;	/* prior cwnd upon entering loss recovery */
-    u32   cached_wwf;            /* cached window‐width factor */
-    u32	  alpha;				 /* Additive increase */
-    u32   beta;  				 /* multiplicative decrease factor */
-
-    u32   acked:16,
-	      rtt_above:8,
-          rtt_low:8;
-
-    u32   cnt_rtt:16,            /* samples in this RTT */
-	      prev_ca_state:3,
-          round_start:1,	     /* start of packet-timed tx->ack round? */
-          lt_is_sampling:1,      /* have we calc’d WWF this RTT? */
-		  lt_rtt_cnt:7,          /* rtt-round counter */
-		  unused:3,
-          wwf_valid:1;           /* last CA state */
+	u8	rtt_low_rounds;
+	u8	lt_rtt_cnt;
+	u8	rtt_above:1,
+		lt_is_sampling:1,
+		wwf_valid:1;
 };
 
-static inline void rtt_reset(struct elegant *ca)
+static inline u32 elegant_win_thresh(void)
 {
+	return (u32)clamp_t(int, win_thresh, 2, 65535);
+}
+
+static inline u32 elegant_theta(void)
+{
+	return (u32)clamp_t(int, theta, 1, 127);
+}
+
+static inline u32 beta_scaled(u32 beta, u32 value)
+{
+	return (u32)(((u64)value * beta) >> BETA_SHIFT);
+}
+
+static inline u32 lp_ts_hz(const struct tcp_sock *tp)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 7, 0)
+	return tp->tcp_usec_ts ? (u32)USEC_PER_SEC : (u32)TCP_TS_HZ;
+#else
+	return (u32)TCP_TS_HZ;
+#endif
+}
+
+static inline u32 usecs_to_ts(const struct tcp_sock *tp, u32 us)
+{
+	u32 hz = lp_ts_hz(tp);
+
+	return hz >= USEC_PER_SEC ? us : us / (u32)(USEC_PER_SEC / hz);
+}
+
+static inline u32 lp_inference_max_ts(const struct tcp_sock *tp)
+{
+	return max(usecs_to_ts(tp, LP_INFERENCE_MAX_MS * (u32)USEC_PER_MSEC),
+		   1U);
+}
+
+static inline u32 elegant_base_rtt(const struct tcp_sock *tp)
+{
+	u32 min_rtt = tcp_min_rtt(tp);
+
+	return min_rtt == ~0U ? 0 : max(min_rtt, 1U);
+}
+
+static inline u32 max_delay(const struct elegant *ca, u32 base_rtt)
+{
+	return ca->max_rtt_us > base_rtt ? ca->max_rtt_us - base_rtt : 0;
+}
+
+static inline u32 avg_delay(const struct elegant *ca, u32 base_rtt)
+{
+	u32 avg;
+
+	if (!ca->cnt_rtt)
+		return 0;
+
+	avg = (u32)div_u64(ca->sum_rtt_us, ca->cnt_rtt);
+
+	return avg > base_rtt ? avg - base_rtt : 0;
+}
+
+static void rtt_reset(struct elegant *ca, u32 base_rtt)
+{
+	u32 decayed;
+
+	if (ca->max_rtt_us < base_rtt)
+		ca->max_rtt_us = base_rtt;
+
+	decayed = base_rtt + (((ca->max_rtt_us - base_rtt) * 7) >> 3);
+	ca->max_rtt_us = max3(ca->round_max_rtt_us, decayed, base_rtt);
+
+	ca->round_max_rtt_us = 0;
 	ca->cnt_rtt = 0;
-	ca->sum_rtt = 0;
+	ca->sum_rtt_us = 0;
 }
 
 static void tcp_elegant_init(struct sock *sk)
 {
-    const struct tcp_sock *tp = tcp_sk(sk);
-    struct elegant *ca = inet_csk_ca(sk);
-
-	*ca = (struct elegant) {
-			.owd_min = U32_MAX,
-			.base_rtt = U32_MAX,
-			.next_rtt_delivered = tp->delivered,
-			.alpha = ALPHA_MAX,
-			.beta = BETA_BASE,
-			.prior_cwnd = tp->snd_cwnd
-		};
-
-}
-
-/* Calculate value scaled by beta */
-static inline u32 calculate_beta_scaled_value(u32 beta, u32 value)
-{
-    return (value * beta) >> BETA_SHIFT;
-}
-
-static inline u32 ema_value(u32 old, u32 new) {
-    return (old * 7 + new) >> 3;
-}
-
-static u32 tcp_elegant_ssthresh(struct sock *sk)
-{
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
-	
-	if (ca->prev_ca_state < TCP_CA_Recovery)
-		ca->prior_cwnd = tp->snd_cwnd;
-	else
-		ca->prior_cwnd = max(ca->prior_cwnd,  tp->snd_cwnd);
 
-	if (ca->flag & LP_WITHIN_INF)
-		return max(tp->snd_cwnd - (tp->snd_cwnd>>3), 2U);
-
-	return max(tp->snd_cwnd - calculate_beta_scaled_value(ca->beta, tp->snd_cwnd), 2U);
-}
-
-/* Maximum queuing delay */
-static inline u32 max_delay(const struct elegant *ca)
-{
-	return ca->max_rtt - ca->base_rtt;
-}
-
-/* Average queuing delay */
-static inline u32 avg_delay(const struct elegant *ca) {
-    return ca->cnt_rtt ? div64_u64(ca->sum_rtt, ca->cnt_rtt) - ca->base_rtt : 0;
+	*ca = (struct elegant) {
+		.owd_min_ts	= U32_MAX,
+		.alpha		= ALPHA_MAX,
+		.beta		= BETA_BASE,
+		.prior_cwnd	= tcp_snd_cwnd(tp),
+		.round_end_seq	= tp->snd_nxt,
+	};
 }
 
 static u32 alpha(struct elegant *ca, u32 da, u32 dm)
 {
-	u32 d1 = dm / 100;	/* Low threshold */
+	u32 d1 = dm / 100;
+	u64 num, den;
 
 	if (da <= d1) {
-		/* If never got out of low delay zone, then use max */
 		if (!ca->rtt_above)
 			return ALPHA_MAX;
 
-		/* Wait for 5 good RTT's before allowing alpha to go alpha max.
-		 * This prevents one good RTT from causing sudden window increase.
-		 */
-		if (++ca->rtt_low < theta)
+		if (++ca->rtt_low_rounds < elegant_theta())
 			return ca->alpha;
 
-		ca->rtt_low = 0;
+		ca->rtt_low_rounds = 0;
 		ca->rtt_above = 0;
 		return ALPHA_MAX;
 	}
 
 	ca->rtt_above = 1;
 
-	/*
-	 * Based on:
-	 *
-	 *      (dm - d1) amin amax
-	 * k1 = -------------------
-	 *         amax - amin
-	 *
-	 *       (dm - d1) amin
-	 * k2 = ----------------  - d1
-	 *        amax - amin
-	 *
-	 *             k1
-	 * alpha = ----------
-	 *          k2 + da
-	 */
-
 	dm -= d1;
 	da -= d1;
-	return (dm * ALPHA_MAX) /
-		(dm + (da  * (ALPHA_MAX - ALPHA_MIN)) / ALPHA_MIN);
+
+	num = (u64)dm * ALPHA_MAX;
+	den = (u64)dm + div_u64((u64)da * (ALPHA_MAX - ALPHA_MIN), ALPHA_MIN);
+	if (!den)
+		return ALPHA_MAX;
+
+	return clamp_t(u32, div64_u64(num, den), ALPHA_MIN, ALPHA_MAX);
 }
 
 static u32 beta(u32 da, u32 dm)
 {
 	u32 d2, d3;
+	s64 num;
 
 	d2 = dm / 10;
 	if (da <= d2)
@@ -207,144 +227,107 @@ static u32 beta(u32 da, u32 dm)
 	if (da >= d3 || d3 <= d2)
 		return BETA_MAX;
 
-	/*
-	 * Based on:
-	 *
-	 *       bmin d3 - bmax d2
-	 * k3 = -------------------
-	 *         d3 - d2
-	 *
-	 *       bmax - bmin
-	 * k4 = -------------
-	 *         d3 - d2
-	 *
-	 * b = k3 + k4 da
-	 */
-	return (BETA_MIN * d3 - BETA_MAX * d2 + (BETA_MAX - BETA_MIN) * da)
-		/ (d3 - d2);
+	num = (s64)BETA_MIN * d3 - (s64)BETA_MAX * d2 +
+	      (s64)(BETA_MAX - BETA_MIN) * da;
+
+	return clamp_t(u32, div_s64(num, d3 - d2), BETA_MIN, BETA_MAX);
 }
 
 static void update_params(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
+	u32 base_rtt = elegant_base_rtt(tp);
 
-    if (tp->snd_cwnd < win_thresh) {
+	if (tcp_snd_cwnd(tp) < elegant_win_thresh() || !base_rtt) {
 		ca->alpha = ALPHA_BASE;
-        ca->beta = BETA_BASE;
-    } else if (ca->cnt_rtt > 0) {
-		u32 dm = max_delay(ca);
-		u32 da = avg_delay(ca);
+		ca->beta = BETA_BASE;
+	} else if (ca->cnt_rtt > 0) {
+		u32 dm = max_delay(ca, base_rtt);
+		u32 da = avg_delay(ca, base_rtt);
 
-		ca->alpha = alpha(ca, da, dm);
-		ca->beta = beta(da, dm);
-	}
-
-	rtt_reset(ca);
-}
-
-static void tcp_elegant_reset(struct sock *sk)
-{
-	struct elegant *ca = inet_csk_ca(sk);
-
-    ca->sum_rtt = 0;
-    ca->cnt_rtt = 0;
-	ca->rtt_curr = 0;
-	ca->alpha = ALPHA_BASE;
-	ca->beta = BETA_BASE;
-	ca->rtt_low = 0;
-	ca->rtt_above = 0;
-
-}
-
-static void lt_sampling(struct sock *sk, const struct rate_sample *rs)
-{
-	struct elegant *ca = inet_csk_ca(sk);
-
-	if (!ca->lt_is_sampling) {
-		if (rs->losses) {
-			ca->lt_is_sampling = true;
-			ca->lt_rtt_cnt = 0;
-		}
-	} else {
-		if (rs->is_app_limited) {
-			ca->lt_is_sampling = false;
-			ca->lt_rtt_cnt = 0;
-		} else if (ca->round_start) {
-			ca->lt_rtt_cnt++;
-            if (ca->flag & LP_WITHIN_INF) {
-                ca->flag &= ~LP_WITHIN_INF;
-                ca->last_drop = 0;
-            }
-		} else if (ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
-			ca->lt_is_sampling = false;
-			ca->lt_rtt_cnt = 0;
+		if (dm) {
+			ca->alpha = alpha(ca, da, dm);
+			ca->beta = beta(da, dm);
 		}
 	}
+
+	rtt_reset(ca, base_rtt);
+	ca->round_end_seq = tp->snd_nxt;
+	ca->wwf_valid = false;
 }
 
-static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
+static void lt_round_elapsed(struct elegant *ca)
 {
-	struct tcp_sock *tp = tcp_sk(sk);
-	struct elegant *ca = inet_csk_ca(sk);
+	if (!ca->lt_is_sampling)
+		return;
 
-	if (new_state == TCP_CA_Loss) {
-		struct rate_sample rs = { .losses = 1 };
+	if (ca->lt_rtt_cnt < U8_MAX)
+		ca->lt_rtt_cnt++;
 
-		tcp_elegant_reset(sk);
-		ca->prev_ca_state = TCP_CA_Loss;
-		ca->round_start = 1;
-		ca->wwf_valid = false;
-		lt_sampling(sk, &rs);
-	} else if (ca->prev_ca_state == TCP_CA_Loss && new_state != TCP_CA_Loss) {
-		ca->last_drop = 0;
+	if (ca->lt_rtt_cnt > 4 * lt_intvl_min_rtts) {
 		ca->lt_is_sampling = false;
-        ca->lt_rtt_cnt = 0;
-		tp->snd_cwnd = max(tp->snd_cwnd, ca->prior_cwnd);
+		ca->lt_rtt_cnt = 0;
 	}
+}
+
+static u32 tcp_elegant_ssthresh(struct sock *sk)
+{
+	const struct tcp_sock *tp = tcp_sk(sk);
+	struct elegant *ca = inet_csk_ca(sk);
+	u32 cwnd = tcp_snd_cwnd(tp);
+	u32 b = ca->beta;
+
+	if (inet_csk(sk)->icsk_ca_state < TCP_CA_Recovery)
+		ca->prior_cwnd = cwnd;
+	else
+		ca->prior_cwnd = max(ca->prior_cwnd, cwnd);
+
+	if (ca->flag & LP_WITHIN_INF)
+		b = BETA_MAX;
+
+	return max(cwnd - beta_scaled(b, cwnd), 2U);
 }
 
 static u32 tcp_lp_remote_hz_estimator(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
-	s64 rhz = ca->remote_hz << 6;	/* remote HZ << 6 */
+	s64 rhz = (s64)ca->remote_hz << 6;
+	s32 dr, dl;
 	s64 m = 0;
 
-	/* not yet record reference time
-	 * go away!! record it before come back!! */
 	if (ca->remote_ref_time == 0 || ca->local_ref_time == 0)
 		goto out;
 
-	/* we can't calc remote HZ with no different!! */
-	if (tp->rx_opt.rcv_tsval == ca->remote_ref_time ||
-	    tp->rx_opt.rcv_tsecr == ca->local_ref_time)
+	dr = (s32)(tp->rx_opt.rcv_tsval - ca->remote_ref_time);
+	dl = (s32)(tp->rx_opt.rcv_tsecr - ca->local_ref_time);
+	if (!dr || !dl)
 		goto out;
 
-	m = TCP_TS_HZ *
-	    (tp->rx_opt.rcv_tsval - ca->remote_ref_time) /
-	    (tp->rx_opt.rcv_tsecr - ca->local_ref_time);
+	m = div_s64((s64)lp_ts_hz(tp) * dr, dl);
 	if (m < 0)
 		m = -m;
 
 	if (rhz > 0) {
-		m -= rhz >> 6;	/* m is now error in remote HZ est */
-		rhz += m;	/* 63/64 old + 1/64 new */
-	} else
+		m -= rhz >> 6;
+		rhz += m;
+	} else {
 		rhz = m << 6;
+	}
 
- out:
-	/* record time for successful remote HZ calc */
+	rhz = clamp_t(s64, rhz, 0, (s64)LP_REMOTE_HZ_MAX << 6);
+
+out:
 	if ((rhz >> 6) > 0)
 		ca->flag |= LP_VALID_RHZ;
 	else
 		ca->flag &= ~LP_VALID_RHZ;
 
-	/* record reference time stamp */
 	ca->remote_ref_time = tp->rx_opt.rcv_tsval;
 	ca->local_ref_time = tp->rx_opt.rcv_tsecr;
 
-	return rhz >> 6;
+	return (u32)(rhz >> 6);
 }
 
 static u32 tcp_lp_owd_calculator(struct sock *sk)
@@ -355,12 +338,14 @@ static u32 tcp_lp_owd_calculator(struct sock *sk)
 
 	ca->remote_hz = tcp_lp_remote_hz_estimator(sk);
 
-	if (ca->flag & LP_VALID_RHZ) {
-		owd =
-		    tp->rx_opt.rcv_tsval * (LP_RESOL / ca->remote_hz) -
-		    tp->rx_opt.rcv_tsecr * (LP_RESOL / TCP_TS_HZ);
+	if ((ca->flag & LP_VALID_RHZ) && ca->remote_hz) {
+		owd = (s64)div_u64((u64)tp->rx_opt.rcv_tsval * lp_ts_hz(tp),
+				   ca->remote_hz) -
+		      (s64)tp->rx_opt.rcv_tsecr;
 		if (owd < 0)
 			owd = -owd;
+
+		owd = min_t(s64, owd, LP_OWD_MAX);
 	}
 
 	if (owd > 0)
@@ -368,146 +353,178 @@ static u32 tcp_lp_owd_calculator(struct sock *sk)
 	else
 		ca->flag &= ~LP_VALID_OWD;
 
-	return owd;
+	return (u32)owd;
 }
 
-static void tcp_lp_rtt_sample(struct sock *sk, u32 rtt)
+static void tcp_lp_rtt_sample(struct sock *sk, u32 base_rtt)
 {
 	struct elegant *ca = inet_csk_ca(sk);
-	s64 mowd = tcp_lp_owd_calculator(sk);
+	u32 mowd = tcp_lp_owd_calculator(sk);
+	u32 gain;
+	s64 err;
 
-	/* sorry that we don't have valid data */
 	if (!(ca->flag & LP_VALID_RHZ) || !(ca->flag & LP_VALID_OWD))
 		return;
 
-	/* record the next min owd */
-	if (mowd < ca->owd_min)
-		ca->owd_min = mowd;
+	if (mowd < ca->owd_min_ts)
+		ca->owd_min_ts = mowd;
 
-	/* always forget the max of the max
-	 * we just set owd_max as one below it */
-	if (mowd > ca->owd_max) {
-		if (mowd > ca->owd_max_rsv) {
-			if (ca->owd_max_rsv == 0)
-				ca->owd_max = mowd;
+	if (mowd > ca->owd_max_ts) {
+		if (mowd > ca->owd_max_rsv_ts) {
+			if (ca->owd_max_rsv_ts == 0)
+				ca->owd_max_ts = mowd;
 			else
-				ca->owd_max = ca->owd_max_rsv;
-			ca->owd_max_rsv = mowd;
-		} else
-			ca->owd_max = mowd;
+				ca->owd_max_ts = ca->owd_max_rsv_ts;
+			ca->owd_max_rsv_ts = mowd;
+		} else {
+			ca->owd_max_ts = mowd;
+		}
 	}
 
-    /* Adaptive EMA for OWD */
-    u32 rtt_var = ca->max_rtt - ca->base_rtt;
-    u32 alpha = rtt_var > ca->base_rtt / 2 ? 2 : 3; /* 1/4 weight for high variability, 1/8 for low */
-    if (ca->sowd != 0) {
-        mowd -= ca->sowd >> alpha;
-        ca->sowd += mowd;
-    } else {
-        ca->sowd = mowd << alpha;
-    }
+	gain = (base_rtt && max_delay(ca, base_rtt) > base_rtt / 2) ? 2 : 3;
+
+	if (!ca->sowd_scaled) {
+		ca->sowd_scaled = mowd << LP_SOWD_SHIFT;
+	} else {
+		err = ((s64)mowd << LP_SOWD_SHIFT) - ca->sowd_scaled;
+		ca->sowd_scaled = (u32)((s64)ca->sowd_scaled + (err >> gain));
+	}
 }
 
-static void tcp_lp_pkts_acked(struct sock *sk, const struct ack_sample *sample)
+static void elegant_early_response(struct sock *sk, u32 now, u32 base_rtt)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
-	u32 now = tcp_time_stamp(tp);
-	u32 delta;
-	u32 base_rtt = 2 * ca->base_rtt;
+	u32 cwnd, target, guard;
 
-	ca->acked = sample->pkts_acked;
+	if (inet_csk(sk)->icsk_ca_state != TCP_CA_Open || ca->lt_is_sampling)
+		return;
 
-	/* calc inference */
-	delta = now - tp->rx_opt.rcv_tsecr;
-	if ((s32)delta > 0) {
-		ca->inference = max(3 * delta, base_rtt);
+	guard = max(2 * usecs_to_ts(tp, base_rtt), 1U);
+	if (ca->last_drop_ts && (s32)(now - ca->last_drop_ts) < (s32)guard)
+		return;
+
+	cwnd = tcp_snd_cwnd(tp);
+	if (ca->flag & LP_WITHIN_INF)
+		target = max(cwnd >> 1, cwnd_min_target);
+	else
+		target = max(cwnd - beta_scaled(ca->beta, cwnd),
+			     cwnd_min_target);
+
+	if (target < cwnd) {
+		tp->snd_ssthresh = max(target, 2U);
+		tcp_snd_cwnd_set(tp, target);
 	}
 
-	/* test if within inference */
-	if (ca->last_drop && (now - ca->last_drop < ca->inference))
-		ca->flag |= LP_WITHIN_INF;	
+	ca->last_drop_ts = now;
+}
+
+static void tcp_elegant_pkts_acked(struct sock *sk,
+				   const struct ack_sample *sample)
+{
+	struct tcp_sock *tp = tcp_sk(sk);
+	struct elegant *ca = inet_csk_ca(sk);
+	u32 now = tcp_time_stamp_ts(tp);
+	u32 rtt_us, base_rtt, delta, inf_max, thr;
+
+	if (sample->rtt_us <= 0)
+		return;
+
+	rtt_us = min_t(u32, sample->rtt_us, RTT_MAX);
+
+	ca->rtt_curr_us = rtt_us;
+	ca->sum_rtt_us += rtt_us;
+	if (ca->cnt_rtt < U16_MAX)
+		ca->cnt_rtt++;
+	ca->round_max_rtt_us = max(ca->round_max_rtt_us, rtt_us);
+	ca->max_rtt_us = max(ca->max_rtt_us, rtt_us);
+
+	base_rtt = elegant_base_rtt(tp);
+
+	tcp_lp_rtt_sample(sk, base_rtt);
+
+	delta = now - tp->rx_opt.rcv_tsecr;
+	if ((s32)delta > 0) {
+		inf_max = lp_inference_max_ts(tp);
+		ca->inference_ts = clamp_t(u32,
+					   max(3 * min(delta, inf_max / 3),
+					       2 * usecs_to_ts(tp, base_rtt)),
+					   1U, inf_max);
+	}
+
+	if (ca->last_drop_ts &&
+	    (s32)(now - ca->last_drop_ts) < (s32)ca->inference_ts)
+		ca->flag |= LP_WITHIN_INF;
 	else
 		ca->flag &= ~LP_WITHIN_INF;
 
-	/* test if within threshold */
-	if (ca->sowd >> 3 <
-	    ca->owd_min + calculate_beta_scaled_value(ca->beta, 100) * (ca->owd_max - ca->owd_min) / 100)
+	thr = ca->owd_max_ts > ca->owd_min_ts ?
+	      ca->owd_max_ts - ca->owd_min_ts : 0;
+	thr = ca->owd_min_ts + beta_scaled(ca->beta, thr);
+
+	if ((ca->sowd_scaled >> LP_SOWD_SHIFT) < thr) {
 		ca->flag |= LP_WITHIN_THR;
-	else
-		ca->flag &= ~LP_WITHIN_THR;
-
-	if (ca->flag & LP_WITHIN_THR)
 		return;
-
-	/* FIXME: try to reset owd_min and owd_max here
-	 * so decrease the chance the min/max is no longer suitable
-	 * and will usually within threshold when whithin inference */
-	ca->owd_min = ca->sowd >> 3;
-	ca->owd_max = ca->sowd >> 2;
-	ca->owd_max_rsv = ca->sowd >> 2;
-
-	/* happened within inference
-	 * drop snd_cwnd into 1 */
-	if (ca->flag & LP_WITHIN_INF && !ca->lt_is_sampling && (now - ca->last_drop > base_rtt)) {
-		/* record this drop time */
-		ca->last_drop = now;
 	}
+	ca->flag &= ~LP_WITHIN_THR;
 
+	ca->owd_min_ts = ca->sowd_scaled >> LP_SOWD_SHIFT;
+	ca->owd_max_ts = ca->sowd_scaled >> (LP_SOWD_SHIFT - 1);
+	ca->owd_max_rsv_ts = ca->owd_max_ts;
+
+	elegant_early_response(sk, now, base_rtt);
 }
 
-static void tcp_illinois_cong_avoid(struct sock *sk, u32 ack, u32 acked)
+static u32 calc_wwf(struct sock *sk)
+{
+	const struct tcp_sock *tp = tcp_sk(sk);
+	const struct elegant *ca = inet_csk_ca(sk);
+	u32 cwnd = tcp_snd_cwnd(tp);
+	u32 base_rtt = elegant_base_rtt(tp);
+	u32 m, wwf, cap;
+	u64 numer;
+
+	m = (u32)max_t(u64, ((u64)ca->rtt_curr_us * 7 + base_rtt) >> 3, 1);
+
+	numer = ((u64)cwnd * ca->max_rtt_us) << E_UNIT_SQ_SHIFT;
+	wwf = (u32)(int_sqrt64(div_u64(numer, m)) >> ELEGANT_SCALE);
+
+	wwf = (u32)(((u64)wwf * (BETA_SCALE + BETA_MAX - ca->beta) +
+		     (BETA_SCALE >> 1)) >> BETA_SHIFT);
+
+	cap = clamp_t(u32, cwnd >> 3, 1U, WWF_CAP_MAX);
+
+	return clamp_t(u32, wwf, 1U, cap);
+}
+
+static void elegant_cong_avoid_ai(struct sock *sk, u32 acked)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
+	u32 cwnd = tcp_snd_cwnd(tp);
+	u32 eff_alpha = ca->alpha;
+	u32 delta;
 
-	/* In slow start */
-	if (tcp_in_slow_start(tp))
-		tcp_slow_start(tp, acked);
-	else {
-		u32 delta;
+	if (!cwnd)
+		return;
 
-		/* snd_cwnd_cnt is # of packets since last cwnd increment */
-		tp->snd_cwnd_cnt += ca->acked;
-		ca->acked = 1;
-
-		/* This is close approximation of:
-		 * tp->snd_cwnd += alpha/tp->snd_cwnd
-		*/
-		delta = (tp->snd_cwnd_cnt * ca->alpha) >> ALPHA_SHIFT;
-		if (delta >= tp->snd_cwnd) {
-			tp->snd_cwnd = min(tp->snd_cwnd + delta / tp->snd_cwnd,
-					   (u32)tp->snd_cwnd_clamp);
-			tp->snd_cwnd_cnt = 0;
+	if (!(ca->flag & LP_WITHIN_INF) && (ca->flag & LP_WITHIN_THR) &&
+	    cwnd >= elegant_win_thresh()) {
+		if (!ca->wwf_valid) {
+			ca->cached_wwf = calc_wwf(sk);
+			ca->wwf_valid = true;
 		}
+		eff_alpha = max(eff_alpha, ca->cached_wwf * ALPHA_SCALE);
 	}
-}
 
-static inline u64 fast_isqrt(u64 x)
-{
-    if (x < 2)
-        return x;
+	tp->snd_cwnd_cnt += acked;
 
-    /* Initial guess: 1 << (floor(log2(x)) / 2) */
-    u64 r = 1ULL << ((fls64(x) - 1) >> 1);
-
-    /* two Newton iteration */
-    r = (r + x / r) >> 1;
-	r = (r + x / r) >> 1;
-
-    return r;
-}
-
-static inline u32 calc_wwf(const struct tcp_sock *tp, const struct elegant *ca)
-{
-	u64 numer	 = (u64)tp->snd_cwnd * ca->max_rtt << E_UNIT_SQ_SHIFT;
-    u32 m        = ema_value(ca->rtt_curr, ca->base_rtt);
-
-	do_div(numer, m);
-
-    u32 wwf = fast_isqrt(numer) >> ELEGANT_SCALE;
-
-    return (wwf * (BETA_SUM - ca->beta) + (BETA_SCALE >> 1)) >> BETA_SHIFT;
+	delta = (u32)(((u64)tp->snd_cwnd_cnt * eff_alpha) >> ALPHA_SHIFT);
+	if (delta >= cwnd) {
+		tcp_snd_cwnd_set(tp, min(cwnd + delta / cwnd,
+					 (u32)tp->snd_cwnd_clamp));
+		tp->snd_cwnd_cnt = 0;
+	}
 }
 
 static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
@@ -515,108 +532,92 @@ static void tcp_elegant_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
-	if (!tcp_is_cwnd_limited(sk))
-		return;
-
-	if (!(ca->flag & LP_WITHIN_INF)) {
-		tcp_illinois_cong_avoid(sk, ack, acked);
-	} else {
-		u32 wwf;
-
-		if (tcp_in_slow_start(tp)) {
-			wwf = tcp_slow_start(tp, acked);
-			if (!wwf)
-				return;
-		} else {
-			/* Compute WWF once per RTT boundary */
-			if (!ca->wwf_valid) {
-				ca->cached_wwf = calc_wwf(tp, ca);
-				ca->wwf_valid  = true;
-			}
-
-			wwf = max(ca->cached_wwf, acked);
-		}
-
-		tcp_cong_avoid_ai(tp, tp->snd_cwnd, wwf);
-	}
-}
-
-static void tcp_elegant_pkts_acked(struct sock *sk, const struct rate_sample *rs)
-{
-	struct elegant *ca = inet_csk_ca(sk);
-
-	u32 rtt_us = rs->rtt_us;
-
-	/* dup ack, no rtt sample */
-	if (rtt_us < 0)
-		return;
-
-	if (rtt_us > RTT_MAX && !(ca->flag & LP_WITHIN_INF))
-		rtt_us = RTT_MAX;
-
-	ca->rtt_curr = rtt_us;
-	ca->sum_rtt += rtt_us;
-	++ca->cnt_rtt;
-
-	ca->base_rtt = min(ca->base_rtt, rtt_us);
-	ca->max_rtt = max(ca->max_rtt, rtt_us);
-}
-
-static void tcp_elegant_update(struct sock *sk, const struct rate_sample *rs)
-{
-	const struct tcp_sock *tp = tcp_sk(sk);
-	struct elegant *ca = inet_csk_ca(sk);
-
-	if (rs->rtt_us > 0 && (ca->cnt_rtt == 0 || rs->delivered> rs->prior_delivered)) {
-		tcp_lp_rtt_sample(sk, rs->rtt_us);
-		tcp_elegant_pkts_acked(sk, rs);
-	}
-
-	if (rs->interval_us <= 0 || !rs->acked_sacked)
-		return; /* Not a valid observation */
-
-	ca->prev_ca_state = inet_csk(sk)->icsk_ca_state;
-	ca->round_start = 0;
-	/* See if we've reached the next RTT */
-	if (!before(rs->prior_delivered, ca->next_rtt_delivered)) {
-		ca->next_rtt_delivered = tp->delivered;
-		ca->round_start = 1;
-		ca->wwf_valid = false;
+	if (after(ack, ca->round_end_seq)) {
+		lt_round_elapsed(ca);
 		update_params(sk);
 	}
 
-	lt_sampling(sk, rs);
+	if (!tcp_is_cwnd_limited(sk))
+		return;
 
+	if (tcp_in_slow_start(tp)) {
+		acked = tcp_slow_start(tp, acked);
+		if (!acked)
+			return;
+	}
+
+	elegant_cong_avoid_ai(sk, acked);
 }
 
-static void tcp_elegant_cong_control(struct sock *sk, const struct rate_sample *rs)
+static void tcp_elegant_set_state(struct sock *sk, u8 new_state)
 {
+	struct elegant *ca = inet_csk_ca(sk);
 
-	tcp_elegant_update(sk, rs);
+	if (new_state != TCP_CA_Loss)
+		return;
 
+	ca->alpha = ALPHA_BASE;
+	ca->beta = BETA_BASE;
+	ca->rtt_low_rounds = 0;
+	ca->rtt_above = 0;
+	ca->wwf_valid = false;
+	ca->lt_is_sampling = true;
+	ca->lt_rtt_cnt = 0;
+
+	rtt_reset(ca, elegant_base_rtt(tcp_sk(sk)));
 }
 
 static u32 tcp_elegant_undo_cwnd(struct sock *sk)
 {
+	const struct tcp_sock *tp = tcp_sk(sk);
 	struct elegant *ca = inet_csk_ca(sk);
 
 	ca->lt_is_sampling = false;
 	ca->lt_rtt_cnt = 0;
 	ca->wwf_valid = false;
+	ca->last_drop_ts = 0;
+	ca->flag &= ~LP_WITHIN_INF;
 
-	return ca->prior_cwnd;
+	return max(tcp_snd_cwnd(tp), ca->prior_cwnd);
+}
+
+static void tcp_elegant_cwnd_event(struct sock *sk, enum tcp_ca_event event)
+{
+	struct tcp_sock *tp = tcp_sk(sk);
+	struct elegant *ca = inet_csk_ca(sk);
+
+	if (event != CA_EVENT_CWND_RESTART && event != CA_EVENT_TX_START)
+		return;
+
+	ca->flag = 0;
+	ca->sowd_scaled = 0;
+	ca->owd_min_ts = U32_MAX;
+	ca->owd_max_ts = 0;
+	ca->owd_max_rsv_ts = 0;
+	ca->remote_hz = 0;
+	ca->remote_ref_time = 0;
+	ca->local_ref_time = 0;
+	ca->last_drop_ts = 0;
+	ca->inference_ts = 0;
+	ca->max_rtt_us = 0;
+	ca->round_max_rtt_us = 0;
+	ca->rtt_curr_us = 0;
+	ca->wwf_valid = false;
+	ca->round_end_seq = tp->snd_nxt;
+
+	rtt_reset(ca, elegant_base_rtt(tp));
 }
 
 static struct tcp_congestion_ops tcp_elegant __read_mostly = {
-	.name			= "elegant",
-	.owner			= THIS_MODULE,
-	.init			= tcp_elegant_init,
-	.ssthresh		= tcp_elegant_ssthresh,
-	.undo_cwnd		= tcp_elegant_undo_cwnd,
-	.cong_avoid		= tcp_elegant_cong_avoid,
-	.cong_control	= tcp_elegant_cong_control,
-	.pkts_acked	    = tcp_lp_pkts_acked,
-	.set_state		= tcp_elegant_set_state
+	.name		= "elegant",
+	.owner		= THIS_MODULE,
+	.init		= tcp_elegant_init,
+	.ssthresh	= tcp_elegant_ssthresh,
+	.undo_cwnd	= tcp_elegant_undo_cwnd,
+	.cong_avoid	= tcp_elegant_cong_avoid,
+	.pkts_acked	= tcp_elegant_pkts_acked,
+	.set_state	= tcp_elegant_set_state,
+	.cwnd_event	= tcp_elegant_cwnd_event,
 };
 
 static int __init elegant_register(void)
@@ -633,6 +634,4 @@ static void __exit elegant_unregister(void)
 module_init(elegant_register);
 module_exit(elegant_unregister);
 
-MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Elegant TCP");
-
+MODULE_DESCRIPTION("TCP Elegant");
